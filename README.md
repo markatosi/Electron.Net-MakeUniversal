@@ -62,6 +62,9 @@ The script needs to be in a folder in your main project's source tree, such as: 
 1. Change directory to this folder and execute
 node ./MakeUniversal.js --app-name=MyProject  --publish-profile-osx-x64=publish-osx-x64.pubxml --publish-profile-osx-arm64=publish-osx-arm64.pubxml --sign-identity="Apple Development: Your Cert name including the ID in side the ()"
 
+Additional dotnet publish arguments can be passed with --dotnet-arg (repeated):
+node ./MakeUniversal.js --app-name=MyProject --publish-profile-osx-x64=publish-osx-x64.pubxml --publish-profile-osx-arm64=publish-osx-arm64.pubxml --sign-identity="Apple Development: ..." --dotnet-arg="-p:SomeProp=Value" --dotnet-arg="-p:LangVersion=latest"
+
 Sign identity is whichever apple signing certificate you need to use for your distribution channel type. Sometimes 
 osx-sign has a hard time picking the correct certificate id in which case just use the hash value of the key instead of
 the english name.
@@ -88,3 +91,10 @@ await new Promise((resolve, reject) => {
                 else resolve();
             });
         });
+
+
+
+MARKNET TECHNOLOGIES, LLC
+Copyright (c)  2023 - 2026 MARKNET TECHNOLOGIES, LLC
+ALL RIGHTS RESERVED
+LICENSE: MIT
