@@ -1,6 +1,9 @@
 # Electron.Net-MakeUniversal
 A script to facilitate building a macos universal binary with Electron.Net
 
+THIS IS NOT A ONE SIZE FITS ALL SORT OF THING. YOU WILL LIKELY NEED TO MAKE CHANGES TO SUIT
+YOUR LOCAL DEVELOPMENT ARCHTECTURE.
+
 This script is offered without warranty or support. Use it as you see fit.
 
 HOW TO RUN
