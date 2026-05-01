@@ -88,13 +88,3 @@ await new Promise((resolve, reject) => {
                 else resolve();
             });
         });
-
-3. ADJUST YOUR ELECTRON.NET electron
-
-Example command:
-node ./MakeUniversal.js --app-name=YourAppName  --publish-profile-osx-x64=publish-osx-x64.pubxml --publish-profile-osx-arm64=publish-osx-arm64.pubxml --sign-identity="Apple Development: Test (AA8ZR4GTZZ)
-
-MARKNET TECHNOLOGIES, LLC
-Copyright (c)  2023 - 2026 MARKNET TECHNOLOGIES, LLC
-ALL RIGHTS RESERVED
-LICENSE: MIT
