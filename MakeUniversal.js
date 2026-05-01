@@ -300,6 +300,41 @@ async function validatePublishProfile(nameOrNull, expectedRuntime) {
     };
 }
 
+/**
+ * Reads Properties/electron-builder.json from the project root and returns
+ * the first mac target string (e.g. "mas-dev", "mas", "dmg").
+ * electron-builder appends "-arm64" to the target directory name for the
+ * arm64 slice — that convention is mirrored when computing arm64AppPath.
+ */
+async function readMacTarget() {
+    const configPath = path.join(projectRoot, 'Properties', 'electron-builder.json');
+    if (!existsSync(configPath)) {
+        throw new Error(`electron-builder.json not found at: ${configPath}`);
+    }
+    const raw = await fs.readFile(configPath, 'utf8');
+    let config;
+    try {
+        config = JSON.parse(raw);
+    } catch (e) {
+        throw new Error(`Failed to parse electron-builder.json: ${e.message}`);
+    }
+    const macTarget = config?.mac?.target;
+    if (!macTarget) {
+        throw new Error('No mac.target found in Properties/electron-builder.json.');
+    }
+    // target can be a string, an object {target,arch}, or an array of either
+    const first = Array.isArray(macTarget) ? macTarget[0] : macTarget;
+    const targetName = (typeof first === 'string') ? first : first?.target;
+    if (!targetName || typeof targetName !== 'string') {
+        throw new Error(`Could not resolve a target string from mac.target in electron-builder.json. Got: ${JSON.stringify(first)}`);
+    }
+    // electron-builder uses "mac" / "mac-arm64" as the output directory names
+    // for target types that produce a macOS installer (dmg, pkg) rather than
+    // a named distribution channel (mas, mas-dev, etc.).
+    const macDirTargets = new Set(['dmg', 'pkg', 'zip', 'tar.gz']);
+    return macDirTargets.has(targetName) ? 'mac' : targetName;
+}
+
 const profileX64 = await validatePublishProfile(cliProfileX64, 'osx-x64'); // null or {name, publishUrlRaw, publishPath, fullPath}
 const profileArm = await validatePublishProfile(cliProfileArm, 'osx-arm64');
 
@@ -338,9 +373,15 @@ if (!publishPathArm) {
     process.exit(1);
 }
 
+// Read the mac target from electron-builder.json — drives the output directory names.
+// electron-builder names the x64 output dir after the target (e.g. "mas-dev") and
+// appends "-arm64" for the arm64 slice (e.g. "mas-dev-arm64").
+const macTarget = await readMacTarget();
+console.log(`Mac target (from Properties/electron-builder.json): ${macTarget}`);
+
 // Compute app bundle paths using the publish paths (no fallbacks)
-const x64AppPath = path.resolve(publishPathX64, 'mas-dev', appBundleName);
-const arm64AppPath = path.resolve(publishPathArm, 'mas-dev-arm64', appBundleName);
+const x64AppPath = path.resolve(publishPathX64, macTarget, appBundleName);
+const arm64AppPath = path.resolve(publishPathArm, `${macTarget}-arm64`, appBundleName);
 const outAppPath = path.resolve(buildCwd, 'bin', 'Desktop', 'universal', appBundleName);
 
 // Validate containment (must remain inside project root)
@@ -398,6 +439,7 @@ const {makeUniversalApp} = await ensureDependenciesAndImport();
 console.log('Resolved paths:');
 console.log('projectRoot:', projectRoot);
 console.log('buildCwd:', buildCwd);
+console.log('macTarget:', macTarget);
 console.log('x64AppPath:', x64AppPath);
 console.log('arm64AppPath:', arm64AppPath);
 console.log('outAppPath:', outAppPath);
