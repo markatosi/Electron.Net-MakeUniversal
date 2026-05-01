@@ -54,6 +54,9 @@ The script needs to be in a folder in your main project's source tree, such as: 
 1. Change directory to this folder and execute
 node ./MakeUniversal.js --app-name=MyProject  --publish-profile-osx-x64=publish-osx-x64.pubxml --publish-profile-osx-arm64=publish-osx-arm64.pubxml --sign-identity="Apple Development: Your Cert name including the ID in side the ()"
 
+Additional dotnet publish arguments can be passed with --dotnet-arg (repeated):
+node ./MakeUniversal.js --app-name=MyProject --publish-profile-osx-x64=publish-osx-x64.pubxml --publish-profile-osx-arm64=publish-osx-arm64.pubxml --sign-identity="Apple Development: ..." --dotnet-arg="-p:SomeProp=Value" --dotnet-arg="-p:LangVersion=latest"
+
 Sign identity is whichever apple signing certificate you need to use for your distribution channel type. Sometimes 
 osx-sign has a hard time picking the correct certificate id in which case just use the hash value of the key instead of
 the english name.
@@ -176,6 +179,30 @@ if (!skipSign && !cliIdentity && !envIdentity) {
     console.error('Do not commit signing identities to source control.');
     process.exit(1);
 }
+
+/**
+ * Read all values of a flag from process.argv.
+ * Accepts forms: --flag=value (multiple) or --flag value (multiple).
+ * Returns an array of all values found.
+ */
+function getFlagValues(names) {
+    const argv = process.argv.slice(2);
+    const result = [];
+    for (let i = 0; i < argv.length; i++) {
+        for (const name of names) {
+            if (argv[i] === name && argv[i + 1] !== undefined) {
+                result.push(argv[i + 1]);
+                i++;
+            } else if (argv[i].startsWith(`${name}=`)) {
+                result.push(argv[i].split('=', 2)[1]);
+            }
+        }
+    }
+    return result;
+}
+
+// Collect arbitrary extra dotnet publish arguments
+const extraDotnetArgs = getFlagValues(['--dotnet-arg']);
 
 function isPathInside(base, target) {
     const rel = path.relative(base, target);
@@ -390,7 +417,7 @@ async function cleanUnwantedFilesFromApp(appPath, architecture) {
         console.log(`Removing directory: runtimes/win-x64`);
         await fs.rm(winX64Path, {recursive: true, force: true});
     }
-    
+
     const files = await fs.readdir(binPath, {withFileTypes: true});
 
     for (const file of files) {
@@ -521,8 +548,8 @@ console.log('=== STEP 2: Building Electron applications ===');
 const publishArgX64_2 = publishProfileOsxX64Name ? `-p:PublishProfile=${publishProfileOsxX64Name}` : '-p:PublishProfile=publish-osx-x64';
 const publishArgArm_2 = publishProfileOsxArmName ? `-p:PublishProfile=${publishProfileOsxArmName}` : '-p:PublishProfile=publish-osx-arm64';
 
-await runCommand('dotnet', ['publish', `${cliAppName}.csproj`, publishArgX64_2, '-p:Version=1.0.0'], buildCwd);
-await runCommand('dotnet', ['publish', `${cliAppName}.csproj`, publishArgArm_2, '-p:Version=1.0.0'], buildCwd);
+await runCommand('dotnet', ['publish', `${cliAppName}.csproj`, publishArgX64_2,  ...extraDotnetArgs], buildCwd);
+await runCommand('dotnet', ['publish', `${cliAppName}.csproj`, publishArgArm_2,  ...extraDotnetArgs], buildCwd);
 
 
 
