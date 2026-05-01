@@ -1,0 +1,48 @@
+# The important bit is "identity": null as we do not want Electron.Net/Electon builder trying to sign the application.
+
+# Set the target to mas or mas-dev, the target here needs to be in alignment with the the lines in the MakeUniversal.js
+
+# const x64AppPath = path.resolve(publishPathX64, 'mas-dev', appBundleName);
+# const arm64AppPath = path.resolve(publishPathArm, 'mas-dev-arm64', appBundleName);
+
+# Yes, I know comments are nut allowed in json
+
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/refs/heads/master/packages/app-builder-lib/scheme.json",
+  "compression": "maximum",
+  "asar": true,
+  "icon": "Resources/AppIcon/Appicon.icns",
+  "appId": "com.company.productid",
+  "productName": "MYAPP",
+  "copyright": "Copyright © 2026",
+  "mac": {
+    "files": [
+      "**/*",
+      "!mac-*/*"
+    ],
+    "category": "public.app-category.whatever",
+    "icon": "Resources/AppIcon/Appicon.icns",
+    "target": [
+      "mas-dev"
+    ],
+    "type": "distribution",
+    "identity": null
+  },
+  "linux": {
+    "target": [
+      "tar.xz"
+    ],
+    "executableArgs": [
+      "--no-sandbox"
+    ],
+    "artifactName": "${name}-${arch}-${version}.${ext}"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": "x64"
+      }
+    ]
+  }
+}
