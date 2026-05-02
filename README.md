@@ -518,17 +518,6 @@ You can use either form with `MakeUniversal.js`:
 
 ---
 
-## 9. Common Apple certificate combinations by target
-
-The exact certificates Apple expects depend on your distribution channel. `MakeUniversal.js` does not hardcode the identity name, but these combinations are the most common starting points.
-
-| Target | Common app signing certificate | Common installer signing certificate | Notarization | Typical entitlements / profile | Hardened runtime |
-| --- | --- | --- | --- | --- | --- |
-| `pkg` | `Developer ID Application` for direct distribution, or `Apple Development` for local/testing workflows | `Developer ID Installer` | Yes for direct distribution | `entitlements.mac.plist`, `entitlements.mac.inherit.plist`, usually no provisioning profile | `true` |
-| `dmg` | `Developer ID Application` for direct distribution, or `Apple Development` for local/testing workflows | Not applicable | Yes for direct distribution | `entitlements.mac.plist`, `entitlements.mac.inherit.plist`, usually no provisioning profile | `true` |
-| `mas` | `Apple Distribution` | Not applicable in this script because no installer is produced | No | `entitlements.mas.plist`, `entitlements.mas.inherit.plist`, App Store provisioning profile, `platform: "mas"` | `false` |
-| `mas-dev` | `Apple Development` | Not applicable in this script because no installer is produced | No | `entitlements.mas.plist`, `entitlements.mas.inherit.plist`, development provisioning profile, `platform: "mas"`, `type: "development"` | `false` |
-
 ### Notes by target
 
 #### `pkg`
