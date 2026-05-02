@@ -1,4 +1,4 @@
-# MakeUniversal Guide
+# MakeUniversal Guide for users of Electron.Net
 
 This guide explains how to use `Scripts/MakeUniversal.js` to build, sign, notarize, and package a universal macOS application.
 
