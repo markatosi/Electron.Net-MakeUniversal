@@ -27,14 +27,13 @@ The script currently supports:
 - [6. Using `MakeUniversal.config.json`](#6-using-makeuniversalconfigjson)
 - [7. Config template structure](#7-config-template-structure)
 - [8. Identity and certificate inputs](#8-identity-and-certificate-inputs)
-- [9. Common Apple certificate combinations by target](#9-common-apple-certificate-combinations-by-target)
-- [10. Advanced `electron-osx-sign` pass-through options](#10-advanced-electron-osx-sign-pass-through-options)
-- [11. Print the effective config](#11-print-the-effective-config)
-- [12. Notarization behavior](#12-notarization-behavior)
-- [13. Output locations](#13-output-locations)
-- [14. Troubleshooting](#14-troubleshooting)
-- [15. Recommended workflow](#15-recommended-workflow)
-- [16. Summary](#16-summary)
+- [9. Advanced `electron-osx-sign` pass-through options](#9-advanced-electron-osx-sign-pass-through-options)
+- [10. Print the effective config](#10-print-the-effective-config)
+- [11. Notarization behavior](#11-notarization-behavior)
+- [12. Output locations](#12-output-locations)
+- [13. Troubleshooting](#13-troubleshooting)
+- [14. Recommended workflow](#14-recommended-workflow)
+- [15. Summary](#15-summary)
 
 ---
 
@@ -574,7 +573,7 @@ Use `--print-effective-config` to confirm what the script will actually use for 
 
 ---
 
-## 10. Advanced `electron-osx-sign` pass-through options
+## 9. Advanced `electron-osx-sign` pass-through options
 
 The config file also supports raw pass-through options for `electron-osx-sign`.
 
@@ -606,7 +605,7 @@ These values are passed to `electron-osx-sign`, but the script’s known structu
 
 ---
 
-## 11. Print the effective config
+## 10. Print the effective config
 
 To see exactly what the script resolved after combining:
 
@@ -632,7 +631,7 @@ Notes:
 
 ---
 
-## 12. Notarization behavior
+## 11. Notarization behavior
 
 For `pkg` and `dmg`, the script notarizes the signed universal `.app` before packaging.
 
@@ -657,7 +656,7 @@ If `--delete-notarize-zip` is used:
 
 ---
 
-## 13. Output locations
+## 12. Output locations
 
 The universal application is created under:
 
@@ -671,7 +670,7 @@ Typical outputs include:
 
 ---
 
-## 14. Troubleshooting
+## 13. Troubleshooting
 
 ### Print resolved config
 
@@ -724,7 +723,7 @@ If the script errors about hardened runtime:
 
 ---
 
-## 15. Recommended workflow
+## 14. Recommended workflow
 
 ### Option A: CLI-only
 
@@ -754,7 +753,7 @@ node "./Scripts/MakeUniversal.js" --config="./Scripts/MakeUniversal.config.json"
 
 ---
 
-## 16. Summary
+## 15. Summary
 
 Use `Scripts/MakeUniversal.js` when you need a repeatable macOS release pipeline that can:
 
