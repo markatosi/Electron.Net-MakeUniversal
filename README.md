@@ -26,14 +26,15 @@ The script currently supports:
 - [5. Target-specific examples](#5-target-specific-examples)
 - [6. Using `MakeUniversal.config.json`](#6-using-makeuniversalconfigjson)
 - [7. Config template structure](#7-config-template-structure)
-- [8. Common Apple certificate combinations by target](#8-common-apple-certificate-combinations-by-target)
-- [9. Advanced `electron-osx-sign` pass-through options](#9-advanced-electron-osx-sign-pass-through-options)
-- [10. Print the effective config](#10-print-the-effective-config)
-- [11. Notarization behavior](#11-notarization-behavior)
-- [12. Output locations](#12-output-locations)
-- [13. Troubleshooting](#13-troubleshooting)
-- [14. Recommended workflow](#14-recommended-workflow)
-- [15. Summary](#15-summary)
+- [8. Identity and certificate inputs](#8-identity-and-certificate-inputs)
+- [9. Common Apple certificate combinations by target](#9-common-apple-certificate-combinations-by-target)
+- [10. Advanced `electron-osx-sign` pass-through options](#10-advanced-electron-osx-sign-pass-through-options)
+- [11. Print the effective config](#11-print-the-effective-config)
+- [12. Notarization behavior](#12-notarization-behavior)
+- [13. Output locations](#13-output-locations)
+- [14. Troubleshooting](#14-troubleshooting)
+- [15. Recommended workflow](#15-recommended-workflow)
+- [16. Summary](#16-summary)
 
 ---
 
@@ -372,7 +373,152 @@ Set these to `null` if unused, or to relative/absolute file paths.
 
 ---
 
-## 8. Common Apple certificate combinations by target
+## 8. Identity and certificate inputs
+
+`MakeUniversal.js` uses two different signing identity concepts:
+
+### App signing identity
+
+This is the identity used by `electron-osx-sign` to sign the universal `.app`.
+
+You can provide it by:
+
+- CLI:
+  - `--sign-identity="<certificate name or hash>"`
+- environment variable:
+  - `SIGN_IDENTITY`
+- config file:
+  - `signIdentity`
+
+Examples:
+
+- `Apple Development: Your Name (TEAMID)`
+- `Apple Distribution: Your Name (TEAMID)`
+- `Developer ID Application: Your Name (TEAMID)`
+- certificate SHA-1 hash if you prefer using the key hash instead of the display name
+
+This identity is required for all signed app targets unless you use `--no-sign`.
+
+### Installer signing identity
+
+This is only used for final `pkg` installer signing with `productsign`.
+
+You can provide it by:
+
+- CLI:
+  - `--installer-identity="<certificate name or hash>"`
+- environment variable:
+  - `INSTALLER_IDENTITY`
+- config file:
+  - `installerIdentity`
+
+Examples:
+
+- `Developer ID Installer: Your Name (TEAMID)`
+- `3rd Party Mac Developer Installer: Your Name (TEAMID)`
+- installer certificate SHA-1 hash
+
+This identity is only required when:
+
+- target = `pkg`
+- signing is enabled
+
+### Tiny identity cheat sheet
+
+These common Apple certificate names usually map to the following purposes:
+
+- `Developer ID Application` → app signing for direct distribution outside the Mac App Store
+- `Developer ID Installer` → installer signing for direct-distribution `pkg` files
+- `Apple Distribution` → App Store-style app signing, commonly used for `mas`
+- `Apple Development` → local / development / test signing, commonly used for `mas-dev` or internal builds
+
+For target-specific combinations, see [9. Common Apple certificate combinations by target](#9-common-apple-certificate-combinations-by-target).
+
+### Identity precedence
+
+The script resolves values in this order:
+
+```text
+CLI switch > config file value > environment variable (where supported) > built-in/default behavior
+```
+
+In practice:
+
+- app signing identity:
+  - CLI `--sign-identity`
+  - config `signIdentity`
+  - env `SIGN_IDENTITY`
+- installer signing identity:
+  - CLI `--installer-identity`
+  - config `installerIdentity`
+  - env `INSTALLER_IDENTITY`
+
+### Which identity goes with which target?
+
+- `pkg`
+  - app identity signs the `.app`
+  - installer identity signs the final `.pkg`
+- `dmg`
+  - app identity signs the `.app`
+  - no installer identity is used because no `pkg` is produced
+- `mas`
+  - app identity signs the `.app`
+  - no installer identity is used in this script
+- `mas-dev`
+  - app identity signs the `.app`
+  - no installer identity is used in this script
+
+### How to confirm what the script resolved
+
+Use:
+
+```zsh
+node "./Scripts/MakeUniversal.js" \
+  --config="./Scripts/MakeUniversal.config.json" \
+  --print-effective-config
+```
+
+That output includes:
+
+- `signing.identity`
+- `signing.installerIdentity`
+- resolved `osxSign` settings for the active target
+
+### How to find your certificate names
+
+On macOS, you can list available signing identities from your keychains with `security find-identity`.
+
+List all code-signing identities:
+
+```zsh
+security find-identity -v -p codesigning
+```
+
+List identities from the login keychain only:
+
+```zsh
+security find-identity -v -p codesigning ~/Library/Keychains/login.keychain-db
+```
+
+If you want to filter for common certificate types, you can grep the output:
+
+```zsh
+security find-identity -v -p codesigning | grep -E "Developer ID|Apple Development|Apple Distribution|Installer"
+```
+
+The output usually includes:
+
+- the certificate SHA-1 hash
+- the human-readable certificate name
+
+You can use either form with `MakeUniversal.js`:
+
+- certificate name, for example `Developer ID Application: Your Name (TEAMID)`
+- certificate hash, if you prefer using the key hash instead of the display name
+
+---
+
+## 9. Common Apple certificate combinations by target
 
 The exact certificates Apple expects depend on your distribution channel. `MakeUniversal.js` does not hardcode the identity name, but these combinations are the most common starting points.
 
@@ -439,7 +585,7 @@ Use `--print-effective-config` to confirm what the script will actually use for 
 
 ---
 
-## 9. Advanced `electron-osx-sign` pass-through options
+## 10. Advanced `electron-osx-sign` pass-through options
 
 The config file also supports raw pass-through options for `electron-osx-sign`.
 
@@ -471,7 +617,7 @@ These values are passed to `electron-osx-sign`, but the script’s known structu
 
 ---
 
-## 10. Print the effective config
+## 11. Print the effective config
 
 To see exactly what the script resolved after combining:
 
@@ -497,7 +643,7 @@ Notes:
 
 ---
 
-## 11. Notarization behavior
+## 12. Notarization behavior
 
 For `pkg` and `dmg`, the script notarizes the signed universal `.app` before packaging.
 
@@ -522,7 +668,7 @@ If `--delete-notarize-zip` is used:
 
 ---
 
-## 12. Output locations
+## 13. Output locations
 
 The universal application is created under:
 
@@ -536,7 +682,7 @@ Typical outputs include:
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Print resolved config
 
@@ -589,7 +735,7 @@ If the script errors about hardened runtime:
 
 ---
 
-## 14. Recommended workflow
+## 15. Recommended workflow
 
 ### Option A: CLI-only
 
@@ -619,7 +765,7 @@ node "./Scripts/MakeUniversal.js" --config="./Scripts/MakeUniversal.config.json"
 
 ---
 
-## 15. Summary
+## 16. Summary
 
 Use `Scripts/MakeUniversal.js` when you need a repeatable macOS release pipeline that can:
 
