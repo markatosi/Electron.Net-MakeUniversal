@@ -1,10 +1,4 @@
 # The important bit is "identity": null as we do not want Electron.Net/Electon builder trying to sign the application.
-
-# Set the target to mas or mas-dev, the target here needs to be in alignment with the the lines in the MakeUniversal.js
-
-# const x64AppPath = path.resolve(publishPathX64, 'mas-dev', appBundleName);
-# const arm64AppPath = path.resolve(publishPathArm, 'mas-dev-arm64', appBundleName);
-
 # Yes, I know comments are nut allowed in json
 
 {
