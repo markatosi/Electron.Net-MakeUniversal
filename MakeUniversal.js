@@ -41,7 +41,7 @@ HOW TO INSTALL DEPENDANCIES
     "electron-osx-sign": "^0.6.0"
   }
 
-Make sure to adjust the version numbers to whatever is current for the two packages
+Make sure to adjust the version numbers to whatever is current for the packages.
 
 2. In a terminal window change directory to the ElectronHostHook folder and execute the follwing commands
 npm install --save-dev @electron/universal
@@ -84,7 +84,68 @@ await new Promise((resolve, reject) => {
             });
         });
 
+For pkg installer you can include a welcome and or license file like so
 
+node ./MakeUniversal.js \
+  --app-name=MyApp \
+  --publish-profile-osx-x64=publish-osx-x64.pubxml \
+  --publish-profile-osx-arm64=publish-osx-arm64.pubxml \
+  --sign-identity="Apple Development: ..." \
+  --installer-identity="Developer ID Installer: ..." \
+  --pkg-welcome="InstallerResources/welcome.rtf" \
+  --pkg-license="InstallerResources/license.rtf"
+
+or for absolute paths
+
+node ./MakeUniversal.js \
+  --app-name=ExampleApp \
+  --publish-profile-osx-x64=publish-osx-x64.pubxml \
+  --publish-profile-osx-arm64=publish-osx-arm64.pubxml \
+  --sign-identity="Apple Development: ..." \
+  --installer-identity="Developer ID Installer: ..." \
+  --pkg-welcome="/absolute/path/to/welcome.rtf" \
+  --pkg-license="/absolute/path/to/license.rtf"
+
+for notarization
+
+node ./Scripts/MakeUniversal.js \
+  --app-name=ExampleApp \
+  --publish-profile-osx-x64=publish-osx-x64.pubxml \
+  --publish-profile-osx-arm64=publish-osx-arm64.pubxml \
+  --sign-identity="Apple Development: ..." \
+  --installer-identity="Developer ID Installer: ..." \
+  --notarize-apple-id="your-apple-id@example.com" \
+  --notarize-app-password="xxxx-xxxx-xxxx-xxxx" \
+  --notarize-team-id="TEAMID1234" \
+  --delete-notarize-zip
+
+optional JSON config file
+
+Copy `Scripts/MakeUniversal.config.template.json` to either:
+  `Scripts/MakeUniversal.config.json`
+or
+  `MakeUniversal.config.json`
+
+You can also point to a custom file explicitly:
+
+node ./Scripts/MakeUniversal.js \
+  --config="./Scripts/MakeUniversal.config.json"
+
+Print the fully resolved effective configuration and exit:
+
+node ./Scripts/MakeUniversal.js \
+  --config="./Scripts/MakeUniversal.config.json" \
+  --print-effective-config
+
+Precedence order for options is:
+  command line switch > config file value > built-in default
+
+For advanced electron-osx-sign options, the JSON config file supports:
+  macSigning.defaults.extraOptions
+  macSigning.targets.<target>.extraOptions
+
+These values are passed through to electron-osx-sign, while the known structured
+options above still take precedence.
 
 MARKNET TECHNOLOGIES, LLC
 Copyright (c)  2023 - 2026 MARKNET TECHNOLOGIES, LLC
@@ -93,14 +154,107 @@ LICENSE: MIT
 */
 
 import path from 'path';
-import {fileURLToPath, pathToFileURL} from 'url';
+import {pathToFileURL} from 'url';
 import fs from 'fs/promises';
 import {existsSync} from 'fs';
 import {spawn} from 'child_process';
 import {createRequire} from 'module';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+function getFirstDefined(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null && value !== '') {
+            return value;
+        }
+    }
+    return null;
+}
+
+function resolvePathFromBase(baseDir, targetPath) {
+    if (!targetPath) return null;
+    return path.isAbsolute(targetPath)
+        ? path.resolve(targetPath)
+        : path.resolve(baseDir, targetPath);
+}
+
+function getConfigValue(obj, pathParts) {
+    let current = obj;
+    for (const part of pathParts) {
+        if (current == null || typeof current !== 'object' || !(part in current)) {
+            return undefined;
+        }
+        current = current[part];
+    }
+    return current;
+}
+
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function redactSecret(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    return '***';
+}
+
+function parseBooleanish(value, description) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+        return false;
+    }
+
+    throw new Error(`${description} must be a boolean value (true/false). Received: ${value}`);
+}
+
+async function loadMakeUniversalConfig(baseDir, explicitConfigPath) {
+    const candidates = explicitConfigPath
+        ? [resolvePathFromBase(baseDir, explicitConfigPath)]
+        : [
+            path.join(baseDir, 'Scripts', 'MakeUniversal.config.json'),
+            path.join(baseDir, 'MakeUniversal.config.json'),
+        ];
+
+    for (const candidate of candidates) {
+        if (!candidate) continue;
+        if (!existsSync(candidate)) {
+            if (explicitConfigPath) {
+                throw new Error(`MakeUniversal config file not found: ${candidate}`);
+            }
+            continue;
+        }
+
+        const raw = await fs.readFile(candidate, 'utf8');
+        let config;
+        try {
+            config = JSON.parse(raw);
+        } catch (e) {
+            throw new Error(`Failed to parse MakeUniversal config file at ${candidate}: ${e.message}`);
+        }
+
+        return {
+            config,
+            configPath: candidate,
+            configDir: path.dirname(candidate),
+        };
+    }
+
+    return {
+        config: null,
+        configPath: null,
+        configDir: baseDir,
+    };
+}
 
 function findProjectRootByCsproj(startDir, csprojName) {
     if (!csprojName) return null;
@@ -129,12 +283,33 @@ function getFirstPositionalPath() {
     return null;
 }
 
-const cliAppName = getFlagValue(['--app-name']);
-const explicitPath = process.env.APP_BASE_DIR || getFirstPositionalPath();
+const cliConfigPath = getFlagValue(['--config', '--make-universal-config']);
+const printEffectiveConfig = process.argv.includes('--print-effective-config');
+const firstPositionalPath = getFirstPositionalPath();
+const bootstrapBaseDir = path.resolve(process.env.APP_BASE_DIR || firstPositionalPath || process.cwd());
+const {
+    config: makeUniversalConfig,
+    configPath: makeUniversalConfigPath,
+    configDir: makeUniversalConfigDir,
+} = await loadMakeUniversalConfig(bootstrapBaseDir, cliConfigPath);
+
+const cliAppName = getFirstDefined(
+    getFlagValue(['--app-name']),
+    getConfigValue(makeUniversalConfig, ['appName']),
+    getConfigValue(makeUniversalConfig, ['app', 'name'])
+);
+const explicitPath = getFirstDefined(
+    process.env.APP_BASE_DIR,
+    firstPositionalPath,
+    getConfigValue(makeUniversalConfig, ['projectRoot'])
+);
 const projectRoot =
-    explicitPath ? path.resolve(explicitPath) : findProjectRootByCsproj(process.cwd(), cliAppName) || null;
+    explicitPath ? resolvePathFromBase(makeUniversalConfigDir, explicitPath) : findProjectRootByCsproj(process.cwd(), cliAppName) || null;
 
 console.log("this is the root " + projectRoot);
+if (makeUniversalConfigPath) {
+    console.log(`Using MakeUniversal config file: ${makeUniversalConfigPath}`);
+}
 if (!projectRoot) {
     console.error('Error: Could not determine project root by locating the application .csproj.');
     console.error('Provide the app with --app-name=<AppName> and ensure `<AppName>.csproj` is in a parent directory,');
@@ -143,16 +318,83 @@ if (!projectRoot) {
 }
 
 // buildCwd (must be inside projectRoot)
-const buildCwd = path.resolve(process.env.APP_BUILD_CWD || projectRoot);
+const buildCwd = resolvePathFromBase(
+    makeUniversalConfigDir,
+    getFirstDefined(process.env.APP_BUILD_CWD, getConfigValue(makeUniversalConfig, ['buildCwd']), projectRoot)
+);
 if (!isPathInside(projectRoot, buildCwd) && buildCwd !== projectRoot) {
     throw new Error(`APP_BUILD_CWD must be inside the project root. Resolved: ${buildCwd}`);
 }
 
 // Accept basenames (with or without `.pubxml`) located in `buildCwd/Properties/PublishProfiles`
-const cliProfileX64 = getFlagValue(['--publish-profile-osx-x64']);
-const cliProfileArm = getFlagValue(['--publish-profile-osx-arm64']);
-const cliIdentity = getFlagValue(['--sign-identity', '--identity']);
+const cliProfileX64 = getFirstDefined(
+    getFlagValue(['--publish-profile-osx-x64']),
+    getConfigValue(makeUniversalConfig, ['publishProfiles', 'osxX64']),
+    getConfigValue(makeUniversalConfig, ['publishProfileOsxX64'])
+);
+const cliProfileArm = getFirstDefined(
+    getFlagValue(['--publish-profile-osx-arm64']),
+    getConfigValue(makeUniversalConfig, ['publishProfiles', 'osxArm64']),
+    getConfigValue(makeUniversalConfig, ['publishProfileOsxArm64'])
+);
+const cliIdentity = getFirstDefined(
+    getFlagValue(['--sign-identity', '--identity']),
+    getConfigValue(makeUniversalConfig, ['signIdentity'])
+);
+
+// Installer certificate for PKG signing — separate from the app-bundle codesign identity.
+// Supply via --installer-identity=<cert> or the INSTALLER_IDENTITY environment variable.
+const cliInstallerIdentity = getFirstDefined(
+    getFlagValue(['--installer-identity']),
+    getConfigValue(makeUniversalConfig, ['installerIdentity'])
+);
+
+// Optional PKG presentation resources. When supplied, the script switches from a plain
+// pkgbuild component package to a pkgbuild + productbuild distribution package so the
+// installer can show welcome/license screens.
+const cliPkgWelcome = getFirstDefined(
+    getFlagValue(['--pkg-welcome', '--installer-welcome']),
+    getConfigValue(makeUniversalConfig, ['pkg', 'welcome'])
+);
+const cliPkgLicense = getFirstDefined(
+    getFlagValue(['--pkg-license', '--installer-license']),
+    getConfigValue(makeUniversalConfig, ['pkg', 'license'])
+);
+
+// Notarization credentials are only used for dmg/pkg targets and only after the
+// universal .app has been signed.
+const cliNotaryAppleId = getFirstDefined(
+    getFlagValue(['--notarize-apple-id', '--apple-id', '--notary-apple-id']),
+    getConfigValue(makeUniversalConfig, ['notarization', 'appleId'])
+);
+const cliNotaryPassword = getFirstDefined(
+    getFlagValue(['--notarize-app-password', '--apple-password', '--app-password', '--notary-password']),
+    getConfigValue(makeUniversalConfig, ['notarization', 'appPassword']),
+    getConfigValue(makeUniversalConfig, ['notarization', 'password'])
+);
+const cliNotaryTeamId = getFirstDefined(
+    getFlagValue(['--notarize-team-id', '--team-id', '--notary-team-id']),
+    getConfigValue(makeUniversalConfig, ['notarization', 'teamId'])
+);
+const deleteNotarizationZipOnSuccess =
+    process.argv.includes('--delete-notarize-zip') ||
+    process.argv.includes('--delete-notarization-zip') ||
+    parseBooleanish(getConfigValue(makeUniversalConfig, ['notarization', 'deleteZipOnSuccess']), 'notarization.deleteZipOnSuccess') ||
+    false;
+
+const cliSignEntitlements = getFlagValue(['--sign-entitlements', '--entitlements']);
+const cliSignEntitlementsInherit = getFlagValue(['--sign-entitlements-inherit', '--entitlements-inherit']);
+const cliSignProvisioningProfile = getFlagValue(['--sign-provisioning-profile', '--provisioning-profile']);
+const cliSignPlatform = getFlagValue(['--sign-platform', '--platform']);
+const cliSignType = getFlagValue(['--sign-type', '--type']);
+const cliSignTimestamp = getFlagValue(['--sign-timestamp', '--timestamp']);
+const cliSignHardenedRuntime = getFlagValue(['--sign-hardened-runtime', '--hardened-runtime']);
+const cliSignGatekeeperAssess = getFlagValue(['--sign-gatekeeper-assess', '--gatekeeper-assess']);
+const cliSignVerbose = getFlagValue(['--sign-verbose', '--verbose']);
 const envIdentity = process.env.SIGN_IDENTITY;
+const notaryAppleId = cliNotaryAppleId || process.env.APPLE_ID || null;
+const notaryPassword = cliNotaryPassword || process.env.NOTARIZE_PASSWORD || null;
+const notaryTeamId = cliNotaryTeamId || process.env.NOTARIZE_TEAM_ID || null;
 const profilesDir = path.resolve(buildCwd, 'Properties', 'PublishProfiles');
 const skipSign = process.argv.includes('--no-sign') || process.argv.includes('--skip-sign');
 
@@ -172,7 +414,7 @@ if (!cliProfileX64 || !cliProfileArm) {
 }
 
 // Require a signing identity (env or CLI) unless skipSign is present
-if (!skipSign && !cliIdentity && !envIdentity) {
+if (!printEffectiveConfig && !skipSign && !cliIdentity && !envIdentity) {
     console.error('Error: A signing identity must be supplied via the SIGN_IDENTITY environment variable or the --sign-identity / --identity switch.');
     console.error('Usage: set SIGN_IDENTITY in the environment or run:');
     console.error('  node `./MakeUniversal.js` --sign-identity=<identity> [other options]');
@@ -232,7 +474,7 @@ function getFlagValue(names) {
 // require identity from env for safety (do not hardcode secrets)
 
 const identity = cliIdentity || process.env.SIGN_IDENTITY;
-if (!skipSign && !identity) {
+if (!printEffectiveConfig && !skipSign && !identity) {
     throw new Error('Signing identity required: set SIGN_IDENTITY in your environment (not committed to repo).');
 }
 
@@ -300,24 +542,56 @@ async function validatePublishProfile(nameOrNull, expectedRuntime) {
     };
 }
 
+function resolveOptionalInputFilePath(filePathOrNull, description) {
+    if (!filePathOrNull) return null;
+
+    const resolved = path.isAbsolute(filePathOrNull)
+        ? path.resolve(filePathOrNull)
+        : path.resolve(buildCwd, filePathOrNull);
+
+    if (!existsSync(resolved)) {
+        throw new Error(`${description} file not found: ${resolved}`);
+    }
+
+    return resolved;
+}
+
+function escapeXml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
 /**
- * Reads Properties/electron-builder.json from the project root and returns
- * the first mac target string (e.g. "mas-dev", "mas", "dmg").
- * electron-builder appends "-arm64" to the target directory name for the
- * arm64 slice — that convention is mirrored when computing arm64AppPath.
+ * Reads and parses Properties/electron-builder.json from the project root.
+ * Returns the full parsed config object.
  */
-async function readMacTarget() {
+async function readElectronBuilderConfig() {
     const configPath = path.join(projectRoot, 'Properties', 'electron-builder.json');
     if (!existsSync(configPath)) {
         throw new Error(`electron-builder.json not found at: ${configPath}`);
     }
     const raw = await fs.readFile(configPath, 'utf8');
-    let config;
     try {
-        config = JSON.parse(raw);
+        return JSON.parse(raw);
     } catch (e) {
         throw new Error(`Failed to parse electron-builder.json: ${e.message}`);
     }
+}
+
+/**
+ * Reads Properties/electron-builder.json from the project root and returns
+ * { targetName, dirName } where:
+ *   targetName — the raw target string from the config (e.g. "pkg", "dmg", "mas-dev")
+ *   dirName    — the output directory name electron-builder uses for that target:
+ *                installer-style targets (dmg, pkg, zip, tar.gz) → "mac" / "mac-arm64"
+ *                channel-style targets  (mas, mas-dev, …)        → "<target>" / "<target>-arm64"
+ */
+async function readMacTarget() {
+    const config = await readElectronBuilderConfig();
     const macTarget = config?.mac?.target;
     if (!macTarget) {
         throw new Error('No mac.target found in Properties/electron-builder.json.');
@@ -329,10 +603,10 @@ async function readMacTarget() {
         throw new Error(`Could not resolve a target string from mac.target in electron-builder.json. Got: ${JSON.stringify(first)}`);
     }
     // electron-builder uses "mac" / "mac-arm64" as the output directory names
-    // for target types that produce a macOS installer (dmg, pkg) rather than
-    // a named distribution channel (mas, mas-dev, etc.).
-    const macDirTargets = new Set(['dmg', 'pkg', 'zip', 'tar.gz']);
-    return macDirTargets.has(targetName) ? 'mac' : targetName;
+    // for installer-style targets; channel-style targets use their own name.
+    const installerTargets = new Set(['dmg', 'pkg', 'zip', 'tar.gz']);
+    const dirName = installerTargets.has(targetName) ? 'mac' : targetName;
+    return { targetName, dirName };
 }
 
 const profileX64 = await validatePublishProfile(cliProfileX64, 'osx-x64'); // null or {name, publishUrlRaw, publishPath, fullPath}
@@ -343,6 +617,8 @@ const publishProfileOsxArmName = profileArm ? profileArm.name : null;
 
 const publishPathX64 = profileX64 ? profileX64.publishPath : null;
 const publishPathArm = profileArm ? profileArm.publishPath : null;
+const pkgWelcomePath = resolveOptionalInputFilePath(cliPkgWelcome, 'PKG welcome');
+const pkgLicensePath = resolveOptionalInputFilePath(cliPkgLicense, 'PKG license');
 
 if (profileX64) {
     console.log(`Using publish profile for osx-x64: ${path.join('Properties', 'PublishProfiles', profileX64.name + '.pubxml')}`);
@@ -352,14 +628,16 @@ if (profileArm) {
     console.log(`Using publish profile for osx-arm64: ${path.join('Properties', 'PublishProfiles', profileArm.name + '.pubxml')}`);
     console.log(`  Publish path: ${publishPathArm || '<none>'} (raw: ${profileArm.publishUrlRaw || '<none>'})`);
 }
+if (pkgWelcomePath) {
+    console.log(`Using PKG welcome resource: ${pkgWelcomePath}`);
+}
+if (pkgLicensePath) {
+    console.log(`Using PKG license resource: ${pkgLicensePath}`);
+}
 
 // Publish URLs were paths; variables available for later use:
 //  - publishPathX64
 //  - publishPathArm
-
-// Determine publish profile arguments (fall back to defaults if none provided)
-const publishArgX64 = publishProfileOsxX64Name ? `-p:PublishProfile=${publishProfileOsxX64Name}` : '-p:PublishProfile=publish-osx-x64';
-const publishArgArm = publishProfileOsxArmName ? `-p:PublishProfile=${publishProfileOsxArmName}` : '-p:PublishProfile=publish-osx-arm64';
 
 const appBundleName = cliAppName.endsWith('.app') ? cliAppName : `${cliAppName}.app`;
 
@@ -373,15 +651,59 @@ if (!publishPathArm) {
     process.exit(1);
 }
 
-// Read the mac target from electron-builder.json — drives the output directory names.
-// electron-builder names the x64 output dir after the target (e.g. "mas-dev") and
-// appends "-arm64" for the arm64 slice (e.g. "mas-dev-arm64").
+// Read the mac target from electron-builder.json — drives the output directory names
+// and determines whether a post-merge installer package should be produced.
 const macTarget = await readMacTarget();
-console.log(`Mac target (from Properties/electron-builder.json): ${macTarget}`);
+console.log(`Mac target (from Properties/electron-builder.json): targetName=${macTarget.targetName}, dirName=${macTarget.dirName}`);
+const packagingTargets = new Set(['dmg', 'pkg']);
+const shouldNotarizeApp = packagingTargets.has(macTarget.targetName) && !skipSign;
+
+// Early validation: PKG target requires an installer identity for signing.
+// Fail before the builds start (which can take many minutes) rather than at the end.
+if (macTarget.targetName === 'pkg' && !skipSign && !printEffectiveConfig) {
+    const installerIdentity = cliInstallerIdentity || process.env.INSTALLER_IDENTITY;
+    if (!installerIdentity) {
+        console.error('Error: The target is "pkg" but no installer certificate identity was provided.');
+        console.error('PKG installers must be signed with a dedicated Installer certificate — this is');
+        console.error('separate from the app-bundle codesign identity (--sign-identity).');
+        console.error('');
+        console.error('Supply the installer certificate via one of:');
+        console.error('  --installer-identity="3rd Party Mac Developer Installer: Your Name (TEAMID)"');
+        console.error('  --installer-identity="Developer ID Installer: Your Name (TEAMID)"');
+        console.error('  INSTALLER_IDENTITY="<cert>"   (environment variable)');
+        console.error('');
+        console.error('You may also use the certificate hash instead of its name.');
+        console.error('To skip all signing (e.g. for a local test build) pass --no-sign.');
+        process.exit(1);
+    }
+}
+if (shouldNotarizeApp && !printEffectiveConfig) {
+    if (!notaryAppleId || !notaryPassword || !notaryTeamId) {
+        console.error(`Error: The target is "${macTarget.targetName}" but notarization credentials are incomplete.`);
+        console.error('dmg/pkg builds require notarization of the signed universal .app before packaging.');
+        console.error('');
+        console.error('Supply all values via switches:');
+        console.error('  --notarize-apple-id="<your-apple-id>"');
+        console.error('  --notarize-app-password="<app-specific-password>"');
+        console.error('  --notarize-team-id="<team-id>"');
+        console.error('');
+        console.error('Environment variable fallbacks are also supported:');
+        console.error('  APPLE_ID, NOTARIZE_PASSWORD, NOTARIZE_TEAM_ID');
+        console.error('');
+        console.error('To skip signing/notarization for a local build, pass --no-sign.');
+        process.exit(1);
+    }
+}
+if (macTarget.targetName !== 'pkg' && (pkgWelcomePath || pkgLicensePath)) {
+    console.warn('Warning: --pkg-welcome / --pkg-license were provided, but the current mac target is not "pkg". These resources will be ignored.');
+}
+if (!packagingTargets.has(macTarget.targetName) && (cliNotaryAppleId || cliNotaryPassword || cliNotaryTeamId || deleteNotarizationZipOnSuccess)) {
+    console.warn('Warning: notarization switches were provided, but the current mac target is neither "pkg" nor "dmg". These notarization options will be ignored.');
+}
 
 // Compute app bundle paths using the publish paths (no fallbacks)
-const x64AppPath = path.resolve(publishPathX64, macTarget, appBundleName);
-const arm64AppPath = path.resolve(publishPathArm, `${macTarget}-arm64`, appBundleName);
+const x64AppPath = path.resolve(publishPathX64, macTarget.dirName, appBundleName);
+const arm64AppPath = path.resolve(publishPathArm, `${macTarget.dirName}-arm64`, appBundleName);
 const outAppPath = path.resolve(buildCwd, 'bin', 'Desktop', 'universal', appBundleName);
 
 // Validate containment (must remain inside project root)
@@ -391,13 +713,55 @@ for (const p of [x64AppPath, arm64AppPath, outAppPath]) {
     }
 }
 
-function runCommand(command, args, cwd) {
-    console.log(`Running command: ${command} ${args.join(' ')} in ${cwd}`);
+function formatCommandForLog(command, args, sensitiveValues = []) {
+    const masked = new Set(sensitiveValues.filter(Boolean));
+    const displayArgs = args.map(arg => masked.has(arg) ? '***' : arg);
+    return `${command} ${displayArgs.join(' ')}`;
+}
+
+function runCommand(command, args, cwd, options = {}) {
+    console.log(`Running command: ${formatCommandForLog(command, args, options.sensitiveValues)} in ${cwd}`);
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {cwd, stdio: 'inherit'});
+        child.on('error', reject);
         child.on('close', (code) => {
             if (code !== 0) reject(new Error(`Command failed with exit code ${code}`));
             else resolve();
+        });
+    });
+}
+
+function runCommandCapture(command, args, cwd, options = {}) {
+    console.log(`Running command: ${formatCommandForLog(command, args, options.sensitiveValues)} in ${cwd}`);
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (chunk) => {
+            const text = chunk.toString();
+            stdout += text;
+            process.stdout.write(text);
+        });
+
+        child.stderr.on('data', (chunk) => {
+            const text = chunk.toString();
+            stderr += text;
+            process.stderr.write(text);
+        });
+
+        child.on('error', reject);
+        child.on('close', (code) => {
+            if (code !== 0) {
+                const error = new Error(`Command failed with exit code ${code}`);
+                error.code = code;
+                error.stdout = stdout;
+                error.stderr = stderr;
+                reject(error);
+            } else {
+                resolve({ stdout, stderr });
+            }
         });
     });
 }
@@ -418,17 +782,19 @@ async function ensureDependenciesAndImport() {
     }
 
     // Dynamic import of @electron/universal to avoid import-time crash
+    let mod;
     try {
         const resolvedPath = require.resolve('@electron/universal');
-        const mod = await import(pathToFileURL(resolvedPath).href);
-        const makeUniversalApp = mod.makeUniversalApp || mod.default;
-        if (!makeUniversalApp) {
-            throw new Error('@electron/universal does not export makeUniversalApp');
-        }
-        return {makeUniversalApp};
+        mod = await import(pathToFileURL(resolvedPath).href);
     } catch (e) {
         throw new Error(`Failed to import @electron/universal: ${e.message}`);
     }
+
+    const makeUniversalApp = mod.makeUniversalApp || mod.default;
+    if (!makeUniversalApp) {
+        throw new Error('@electron/universal does not export makeUniversalApp');
+    }
+    return {makeUniversalApp};
 }
 
 // Acquire makeUniversalApp after verifying dependencies
@@ -439,10 +805,17 @@ const {makeUniversalApp} = await ensureDependenciesAndImport();
 console.log('Resolved paths:');
 console.log('projectRoot:', projectRoot);
 console.log('buildCwd:', buildCwd);
-console.log('macTarget:', macTarget);
+console.log('macTarget.targetName:', macTarget.targetName);
+console.log('macTarget.dirName:', macTarget.dirName);
 console.log('x64AppPath:', x64AppPath);
 console.log('arm64AppPath:', arm64AppPath);
 console.log('outAppPath:', outAppPath);
+
+if (printEffectiveConfig) {
+    console.log('\n=== EFFECTIVE CONFIG ===');
+    console.log(JSON.stringify(buildEffectiveConfig(), null, 2));
+    process.exit(0);
+}
 
 async function cleanUnwantedFilesFromApp(appPath, architecture) {
     const binPath = path.join(appPath, 'Contents', 'Resources', 'bin');
@@ -540,10 +913,536 @@ async function copyJsonFile() {
     }
 }
 
+
+/**
+ * Reads the <Version> element from the project's .csproj file.
+ * Used as a fallback when the ElectronNET package.json cannot be found.
+ * Returns the version string truncated to 3-part semver (e.g. "1.1.1.1" → "1.1.1"),
+ * or "1.0.0" if the file or element cannot be found.
+ */
+async function readProjectVersion() {
+    const csprojPath = path.join(buildCwd, `${cliAppName}.csproj`);
+    if (!existsSync(csprojPath)) {
+        console.warn(`Warning: .csproj not found at ${csprojPath}; using version "1.0.0" for packaging.`);
+        return '1.0.0';
+    }
+    const xml = await fs.readFile(csprojPath, 'utf8');
+    const m = xml.match(/<Version>\s*([^<\s]+)\s*<\/Version>/i);
+    if (!m) {
+        console.warn('Warning: <Version> not found in .csproj; using version "1.0.0" for packaging.');
+        return '1.0.0';
+    }
+    return m[1].trim().split('.').slice(0, 3).join('.');
+}
+
+/**
+ * Builds a copy-friendly installer base name such as "ExampleApp-1.1.1".
+ * Product metadata comes from Properties/electron-builder.json so existing
+ * project settings continue to drive naming without depending on electron-builder.
+ */
+async function getInstallerArtifactBaseName() {
+    const ebConfig = await readElectronBuilderConfig();
+    const productName = ebConfig.productName || cliAppName;
+    const version = await readProjectVersion();
+    return `${productName}-${version}`;
+}
+
+function getDerivedHardenedRuntimeForTarget(targetName) {
+    if (targetName === 'pkg' || targetName === 'dmg') {
+        return true;
+    }
+    if (targetName === 'mas' || targetName === 'mas-dev') {
+        return false;
+    }
+    return null;
+}
+
+function getMacSigningTargetConfig(targetName) {
+    return getConfigValue(makeUniversalConfig, ['macSigning', 'targets', targetName]) || {};
+}
+
+function getMacSigningDefaultConfig() {
+    return getConfigValue(makeUniversalConfig, ['macSigning', 'defaults']) || {};
+}
+
+function getMacSigningExtraOptions(targetName) {
+    const defaultsExtra = getConfigValue(makeUniversalConfig, ['macSigning', 'defaults', 'extraOptions']);
+    const targetExtra = getConfigValue(makeUniversalConfig, ['macSigning', 'targets', targetName, 'extraOptions']);
+
+    if (defaultsExtra != null && !isPlainObject(defaultsExtra)) {
+        throw new Error('macSigning.defaults.extraOptions must be a JSON object.');
+    }
+    if (targetExtra != null && !isPlainObject(targetExtra)) {
+        throw new Error(`macSigning.targets.${targetName}.extraOptions must be a JSON object.`);
+    }
+
+    return {
+        ...(defaultsExtra || {}),
+        ...(targetExtra || {}),
+    };
+}
+
+function resolveMacSigningOptions(targetName) {
+    const signingDefaults = getMacSigningDefaultConfig();
+    const signingTarget = getMacSigningTargetConfig(targetName);
+
+    const resolvedHardenedRuntime = parseBooleanish(
+        getFirstDefined(
+            cliSignHardenedRuntime,
+            signingTarget.hardenedRuntime,
+            signingDefaults.hardenedRuntime,
+            getDerivedHardenedRuntimeForTarget(targetName)
+        ),
+        'hardened-runtime'
+    );
+
+    const resolvedGatekeeperAssess = parseBooleanish(
+        getFirstDefined(
+            cliSignGatekeeperAssess,
+            signingTarget.gatekeeperAssess,
+            signingDefaults.gatekeeperAssess,
+            false
+        ),
+        'gatekeeper-assess'
+    );
+
+    const resolvedVerbose = parseBooleanish(
+        getFirstDefined(
+            cliSignVerbose,
+            signingTarget.verbose,
+            signingDefaults.verbose,
+            true
+        ),
+        'verbose'
+    );
+
+    const options = {
+        app: outAppPath,
+        identity,
+        entitlements: resolveOptionalInputFilePath(
+            getFirstDefined(cliSignEntitlements, signingTarget.entitlements, signingDefaults.entitlements),
+            'Signing entitlements'
+        ),
+        entitlementsInherit: resolveOptionalInputFilePath(
+            getFirstDefined(cliSignEntitlementsInherit, signingTarget.entitlementsInherit, signingDefaults.entitlementsInherit),
+            'Signing inherit entitlements'
+        ),
+        provisioningProfile: resolveOptionalInputFilePath(
+            getFirstDefined(cliSignProvisioningProfile, signingTarget.provisioningProfile, signingDefaults.provisioningProfile),
+            'Signing provisioning profile'
+        ),
+        platform: getFirstDefined(cliSignPlatform, signingTarget.platform, signingDefaults.platform),
+        type: getFirstDefined(cliSignType, signingTarget.type, signingDefaults.type, 'distribution'),
+        timestamp: getFirstDefined(cliSignTimestamp, signingTarget.timestamp, signingDefaults.timestamp, 'http://timestamp.apple.com/ts01'),
+        hardenedRuntime: resolvedHardenedRuntime,
+        gatekeeperAssess: resolvedGatekeeperAssess,
+        verbose: resolvedVerbose,
+        extraOptions: getMacSigningExtraOptions(targetName),
+    };
+
+    const expectedHardenedRuntime = getDerivedHardenedRuntimeForTarget(targetName);
+    if (expectedHardenedRuntime !== null && options.hardenedRuntime !== expectedHardenedRuntime) {
+        if ((targetName === 'pkg' || targetName === 'dmg') && shouldNotarizeApp) {
+            throw new Error(`The target "${targetName}" requires hardened-runtime=true when notarization is enabled. Resolve this via CLI or MakeUniversal config.`);
+        }
+        if (targetName === 'mas' || targetName === 'mas-dev') {
+            throw new Error(`The target "${targetName}" requires hardened-runtime=false. Resolve this via CLI or MakeUniversal config.`);
+        }
+        console.warn(`Warning: hardened-runtime=${options.hardenedRuntime} does not match the usual expectation for target "${targetName}" (${expectedHardenedRuntime}).`);
+    }
+
+    return options;
+}
+
+function buildEffectiveConfig() {
+    const resolvedSigning = resolveMacSigningOptions(macTarget.targetName);
+
+    return {
+        configSource: makeUniversalConfigPath || '<none>',
+        appName: cliAppName,
+        projectRoot,
+        buildCwd,
+        macTarget,
+        packaging: {
+            installerTargets: Array.from(packagingTargets),
+            shouldNotarizeApp,
+            skipSign,
+        },
+        publishProfiles: {
+            osxX64: {
+                name: publishProfileOsxX64Name,
+                publishPath: publishPathX64,
+            },
+            osxArm64: {
+                name: publishProfileOsxArmName,
+                publishPath: publishPathArm,
+            },
+        },
+        pkg: {
+            welcome: pkgWelcomePath,
+            license: pkgLicensePath,
+        },
+        signing: {
+            identity: identity || null,
+            installerIdentity: cliInstallerIdentity || process.env.INSTALLER_IDENTITY || null,
+            osxSign: {
+                entitlements: resolvedSigning.entitlements,
+                entitlementsInherit: resolvedSigning.entitlementsInherit,
+                provisioningProfile: resolvedSigning.provisioningProfile,
+                platform: resolvedSigning.platform,
+                type: resolvedSigning.type,
+                timestamp: resolvedSigning.timestamp,
+                hardenedRuntime: resolvedSigning.hardenedRuntime,
+                gatekeeperAssess: resolvedSigning.gatekeeperAssess,
+                verbose: resolvedSigning.verbose,
+                extraOptions: resolvedSigning.extraOptions,
+            },
+        },
+        notarization: {
+            appleId: notaryAppleId,
+            appPassword: redactSecret(notaryPassword),
+            teamId: notaryTeamId,
+            deleteZipOnSuccess: deleteNotarizationZipOnSuccess,
+        },
+    };
+}
+
+function tryParseJson(text) {
+    if (!text) return null;
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+}
+
+function extractNotarySubmissionId(text) {
+    if (!text) return null;
+
+    const parsed = tryParseJson(text);
+    if (parsed?.id) return parsed.id;
+
+    const patterns = [
+        /"id"\s*:\s*"([^"]+)"/i,
+        /\bid:\s*([0-9a-f-]{8,})/i,
+        /\bRequestUUID\b[^0-9a-fA-F]*([0-9a-fA-F-]{8,})/i,
+        /\bsubmission id\b[^0-9a-fA-F]*([0-9a-fA-F-]{8,})/i,
+    ];
+
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) {
+            return match[1];
+        }
+    }
+
+    return null;
+}
+
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function buildNotaryLogCommand(submissionId) {
+    const args = [
+        'xcrun',
+        'notarytool',
+        'log',
+        submissionId,
+        '--apple-id', notaryAppleId,
+        '--password', notaryPassword,
+        '--team-id', notaryTeamId,
+        '--output-format', 'json',
+    ];
+
+    return args.map(shellQuote).join(' ');
+}
+
+function injectPkgPresentationNodes(distributionXml, options) {
+    const closingTag = '</installer-gui-script>';
+    const insertIndex = distributionXml.lastIndexOf(closingTag);
+    if (insertIndex === -1) {
+        throw new Error('Failed to find </installer-gui-script> in synthesized distribution XML.');
+    }
+
+    let insertContent = '';
+    if (options.welcomeFileName) {
+        insertContent += `    <welcome file="${escapeXml(options.welcomeFileName)}"/>
+`;
+    }
+    if (options.licenseFileName) {
+        insertContent += `    <license file="${escapeXml(options.licenseFileName)}"/>
+`;
+    }
+
+    return distributionXml.slice(0, insertIndex) + insertContent + distributionXml.slice(insertIndex);
+}
+
+async function createPkgInstallerWithPresentation(baseName, version, appId) {
+    const ebConfig = await readElectronBuilderConfig();
+    const productName = ebConfig.productName || cliAppName;
+    const universalDir = path.dirname(outAppPath);
+    const artifactPath = path.join(universalDir, `${baseName}.pkg`);
+    const tempDir = await fs.mkdtemp(path.join(universalDir, 'pkg-stage-'));
+    const resourcesDir = path.join(tempDir, 'resources');
+    const componentPkgName = `${appId}.pkg`;
+    const componentPkgPath = path.join(tempDir, componentPkgName);
+    const distributionPath = path.join(tempDir, 'distribution.xml');
+
+    try {
+        await fs.rm(artifactPath, { force: true });
+        await fs.mkdir(resourcesDir, { recursive: true });
+
+        console.log('Creating PKG component package with pkgbuild (presentation mode):');
+        console.log(`  App        : ${outAppPath}`);
+        console.log(`  Identifier : ${appId}`);
+        console.log(`  Version    : ${version}`);
+        console.log(`  Component  : ${componentPkgPath}`);
+
+        await runCommand('pkgbuild', [
+            '--component', outAppPath,
+            '--install-location', '/Applications',
+            '--identifier', appId,
+            '--version', version,
+            componentPkgPath,
+        ], projectRoot);
+
+        if (pkgWelcomePath) {
+            await fs.copyFile(pkgWelcomePath, path.join(resourcesDir, path.basename(pkgWelcomePath)));
+        }
+        if (pkgLicensePath) {
+            await fs.copyFile(pkgLicensePath, path.join(resourcesDir, path.basename(pkgLicensePath)));
+        }
+
+        await runCommand('productbuild', [
+            '--synthesize',
+            '--package', componentPkgPath,
+            distributionPath,
+        ], tempDir);
+
+        let distributionXml = await fs.readFile(distributionPath, 'utf8');
+
+        if (!distributionXml.includes('<title>')) {
+            distributionXml = distributionXml.replace(
+                '<installer-gui-script minSpecVersion="2">',
+                `<installer-gui-script minSpecVersion="2">\n    <title>${escapeXml(productName)}</title>`
+            );
+        }
+
+        distributionXml = injectPkgPresentationNodes(distributionXml, {
+            welcomeFileName: pkgWelcomePath ? path.basename(pkgWelcomePath) : null,
+            licenseFileName: pkgLicensePath ? path.basename(pkgLicensePath) : null,
+        });
+
+        await fs.writeFile(distributionPath, distributionXml, 'utf8');
+
+        console.log('Creating final PKG with productbuild resources:');
+        console.log(`  Distribution : ${distributionPath}`);
+        console.log(`  Resources    : ${resourcesDir}`);
+        console.log(`  Output       : ${artifactPath}`);
+
+        await runCommand('productbuild', [
+            '--distribution', distributionPath,
+            '--package-path', tempDir,
+            '--resources', resourcesDir,
+            artifactPath,
+        ], tempDir);
+
+        const stat = await fs.stat(artifactPath);
+        console.log(`✔  PKG installer created: ${artifactPath}  (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+        return artifactPath;
+    } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+    }
+}
+
+/**
+ * Creates a macOS PKG directly with pkgbuild.
+ *
+ * We intentionally avoid electron-builder here because its PKG path was producing
+ * a distribution-only wrapper (~14kb) that omitted the real component payload.
+ * pkgbuild creates a flat, installable component package containing the app bundle.
+ * If signing is requested, productsign runs afterwards in signPkgInstaller().
+ */
+async function createPkgInstaller() {
+    const ebConfig = await readElectronBuilderConfig();
+    const baseName = await getInstallerArtifactBaseName();
+    const artifactPath = path.join(path.dirname(outAppPath), `${baseName}.pkg`);
+    const version = await readProjectVersion();
+    const appId = ebConfig.appId || 'com.example.app';
+
+    if (pkgWelcomePath || pkgLicensePath) {
+        return await createPkgInstallerWithPresentation(baseName, version, appId);
+    }
+
+    await fs.rm(artifactPath, { force: true });
+
+    const args = [
+        '--component', outAppPath,
+        '--install-location', '/Applications',
+        '--identifier', appId,
+        '--version', version,
+        artifactPath,
+    ];
+
+    console.log('Creating PKG with pkgbuild:');
+    console.log(`  App        : ${outAppPath}`);
+    console.log(`  Identifier : ${appId}`);
+    console.log(`  Version    : ${version}`);
+    console.log(`  Output     : ${artifactPath}`);
+
+    await runCommand('pkgbuild', args, projectRoot);
+
+    const stat = await fs.stat(artifactPath);
+    console.log(`✔  PKG installer created: ${artifactPath}  (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+    return artifactPath;
+}
+
+/**
+ * Creates a compressed macOS DMG using hdiutil.
+ *
+ * The DMG contains:
+ *  • the signed universal .app bundle
+ *  • an Applications symlink for drag-and-drop installation
+ */
+async function createDmgInstaller() {
+    const ebConfig = await readElectronBuilderConfig();
+    const baseName = await getInstallerArtifactBaseName();
+    const productName = ebConfig.productName || cliAppName;
+    const universalDir = path.dirname(outAppPath);
+    const artifactPath = path.join(universalDir, `${baseName}.dmg`);
+    const stageDir = await fs.mkdtemp(path.join(universalDir, 'dmg-stage-'));
+    const stagedAppPath = path.join(stageDir, path.basename(outAppPath));
+
+    try {
+        await fs.rm(artifactPath, { force: true });
+        await fs.cp(outAppPath, stagedAppPath, { recursive: true });
+        await fs.symlink('/Applications', path.join(stageDir, 'Applications'));
+
+        console.log('Creating DMG with hdiutil:');
+        console.log(`  Volume name : ${productName}`);
+        console.log(`  Staging dir : ${stageDir}`);
+        console.log(`  Output      : ${artifactPath}`);
+
+        await runCommand('hdiutil', [
+            'create',
+            '-volname', productName,
+            '-srcfolder', stageDir,
+            '-ov',
+            '-format', 'UDZO',
+            artifactPath,
+        ], projectRoot);
+
+        const stat = await fs.stat(artifactPath);
+        console.log(`✔  DMG installer created: ${artifactPath}  (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+        return artifactPath;
+    } finally {
+        await fs.rm(stageDir, { recursive: true, force: true });
+    }
+}
+
+/**
+ * Packages the already-assembled universal .app into a native macOS installer.
+ * Output is placed in the same universal folder as the .app.
+ *
+ * Only called for installer-style targets (dmg, pkg).
+ * mas / mas-dev are never packaged here — they ship as bare .app via the App Store.
+ *
+ * Native tooling used:
+ *  • pkgbuild  — produces a flat installable PKG directly from the .app
+ *  • hdiutil   — produces a compressed drag-and-drop DMG
+ */
+async function packageUniversalApp(targetName) {
+    console.log(`=== PACKAGING STEP: Creating ${targetName} installer for universal app ===`);
+    if (targetName === 'pkg') {
+        return await createPkgInstaller();
+    }
+    if (targetName === 'dmg') {
+        return await createDmgInstaller();
+    }
+    throw new Error(`Unsupported native macOS installer target: ${targetName}`);
+}
+
+/**
+ * Signs a PKG installer using the macOS `productsign` command-line tool.
+ *
+ * PKG installers require a dedicated "Installer" certificate that is entirely
+ * separate from the codesign identity used for the .app bundle.  Common names:
+ *   • "3rd Party Mac Developer Installer: Your Name (TEAMID)"  — Mac App Store
+ *   • "Developer ID Installer: Your Name (TEAMID)"             — Direct distribution
+ *
+ * Supply the certificate via:
+ *   --installer-identity="<cert name or hash>"   (CLI flag)
+ *   INSTALLER_IDENTITY="<cert>"                  (environment variable)
+ *
+ * productsign writes to a new file; this function then replaces the original
+ * so the caller always ends up with the signed file at the same path.
+ *
+ * Only called when the target is "pkg" and --no-sign / --skip-sign is NOT set.
+ */
+async function signPkgInstaller(pkgPath) {
+    const installerIdentity = cliInstallerIdentity || process.env.INSTALLER_IDENTITY;
+    if (!installerIdentity) {
+        throw new Error(
+            'PKG installer signing requires an installer certificate identity.\n' +
+            'Supply it via  --installer-identity="<cert>"  or set the INSTALLER_IDENTITY\n' +
+            'environment variable.  Typical certificate names:\n' +
+            '  • "3rd Party Mac Developer Installer: Your Name (TEAMID)"  (Mac App Store)\n' +
+            '  • "Developer ID Installer: Your Name (TEAMID)"             (Direct distribution)\n' +
+            'You may also pass the certificate hash instead of the name.\n' +
+            'Use --no-sign / --skip-sign to skip all signing.'
+        );
+    }
+
+    const signedPkgPath = pkgPath + '.signed.pkg';
+
+    console.log(`\n=== PKG SIGNING: ${path.basename(pkgPath)} ===`);
+    console.log(`  Installer identity : ${installerIdentity}`);
+    console.log(`  Input              : ${pkgPath}`);
+    console.log(`  Signed output      : ${signedPkgPath}  (will replace input)`);
+
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    const spinner = setInterval(() => {
+        process.stdout.write(`\r${frames[i++ % frames.length]}  PKG signing in progress...`);
+    }, 100);
+
+    try {
+        await new Promise((resolve, reject) => {
+            const child = spawn(
+                'productsign',
+                ['--sign', installerIdentity, pkgPath, signedPkgPath],
+                { stdio: 'inherit' }
+            );
+            child.on('close', (code) => {
+                if (code !== 0) reject(new Error(`productsign exited with code ${code}`));
+                else resolve();
+            });
+        });
+
+        // Replace the unsigned PKG with the signed one.
+        await fs.rename(signedPkgPath, pkgPath);
+
+        clearInterval(spinner);
+        process.stdout.write('\r✔  PKG signing complete.                                      \n');
+        console.log(`Signed PKG: ${pkgPath}`);
+    } catch (err) {
+        clearInterval(spinner);
+        process.stdout.write('\r✖  PKG signing failed.                                        \n');
+        // Best-effort cleanup of the partial signed file.
+        if (existsSync(signedPkgPath)) {
+            await fs.rm(signedPkgPath, { force: true });
+        }
+        console.error(err);
+        throw err;
+    }
+}
+
 async function signUniversalApp() {
     const electronHostHookDir = path.resolve(projectRoot, 'ElectronHostHook');
     const hookRequire = createRequire(path.join(electronHostHookDir, 'package.json'));
     const {default: sign} = await import(pathToFileURL(hookRequire.resolve('electron-osx-sign')).href);
+    const signingOptions = resolveMacSigningOptions(macTarget.targetName);
 
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let i = 0;
@@ -553,19 +1452,35 @@ async function signUniversalApp() {
 
     try {
         await new Promise((resolve, reject) => {
-            sign({
-                app: outAppPath,
-                identity,
-                'entitlements': path.join(projectRoot, 'entitlements.mas.plist'),
-                'entitlements-inherit': path.join(projectRoot, 'entitlements.mas.inherit.plist'),
-                'provisioning-profile': path.join(projectRoot, 'Development.provisionprofile'),
-                type: 'distribution',
-                //platform: 'mas',
-                timestamp: 'http://timestamp.apple.com/ts01',
-                'hardened-runtime': false,
-                'gatekeeper-assess': false,
-                verbose: true
-            }, (err) => {
+            const osxSignOptions = {
+                ...signingOptions.extraOptions,
+                app: signingOptions.app,
+                identity: signingOptions.identity,
+                type: signingOptions.type,
+                timestamp: signingOptions.timestamp,
+                'hardened-runtime': signingOptions.hardenedRuntime,
+                'gatekeeper-assess': signingOptions.gatekeeperAssess,
+                verbose: signingOptions.verbose,
+                ...(signingOptions.entitlements ? { 'entitlements': signingOptions.entitlements } : {}),
+                ...(signingOptions.entitlementsInherit ? { 'entitlements-inherit': signingOptions.entitlementsInherit } : {}),
+                ...(signingOptions.provisioningProfile ? { 'provisioning-profile': signingOptions.provisioningProfile } : {}),
+                ...(signingOptions.platform ? { platform: signingOptions.platform } : {}),
+            };
+
+            console.log('Resolved osx-sign options:');
+            console.log(`  target              : ${macTarget.targetName}`);
+            console.log(`  entitlements        : ${signingOptions.entitlements || '<none>'}`);
+            console.log(`  entitlementsInherit : ${signingOptions.entitlementsInherit || '<none>'}`);
+            console.log(`  provisioningProfile : ${signingOptions.provisioningProfile || '<none>'}`);
+            console.log(`  platform            : ${signingOptions.platform || '<none>'}`);
+            console.log(`  type                : ${signingOptions.type}`);
+            console.log(`  timestamp           : ${signingOptions.timestamp || '<none>'}`);
+            console.log(`  hardenedRuntime     : ${signingOptions.hardenedRuntime}`);
+            console.log(`  gatekeeperAssess    : ${signingOptions.gatekeeperAssess}`);
+            console.log(`  verbose             : ${signingOptions.verbose}`);
+            console.log(`  extraOptions        : ${JSON.stringify(signingOptions.extraOptions)}`);
+
+            sign(osxSignOptions, (err) => {
                 if (err) reject(err);
                 else resolve();
             });
@@ -577,6 +1492,95 @@ async function signUniversalApp() {
         process.stdout.write('\r✖  Signing failed.                                            \n');
         console.error(err);
         throw err;
+    }
+}
+
+async function failNotarization(err, zipPath, submissionId) {
+    const combinedOutput = `${err?.stdout || ''}\n${err?.stderr || ''}\n${err?.message || ''}`;
+    const resolvedSubmissionId = err?.submissionId || submissionId || extractNotarySubmissionId(combinedOutput);
+
+    console.error('\n✖  Notarization failed.');
+    console.error(`The notarization zip has been preserved at: ${zipPath}`);
+
+    if (resolvedSubmissionId) {
+        console.error(`Submission ID: ${resolvedSubmissionId}`);
+        console.error('To fetch Apple\'s notarization log, run:');
+        console.error(buildNotaryLogCommand(resolvedSubmissionId));
+        console.error('Warning: this command includes the app-specific password.');
+    } else {
+        console.error('Apple did not return a notarization submission ID, so a log command could not be generated automatically.');
+    }
+
+    throw err;
+}
+
+async function notarizeAndStapleUniversalApp() {
+    const universalDir = path.dirname(outAppPath);
+    const zipBaseName = path.basename(outAppPath, '.app');
+    const zipPath = path.join(universalDir, `${zipBaseName}.notarization.zip`);
+
+    console.log('\n=== NOTARIZATION STEP: Zipping signed app for notarization ===');
+    console.log(`  App : ${outAppPath}`);
+    console.log(`  Zip : ${zipPath}`);
+
+    await fs.rm(zipPath, { force: true });
+
+    await runCommand('ditto', [
+        '-c', '-k', '--sequesterRsrc', '--keepParent',
+        outAppPath,
+        zipPath,
+    ], projectRoot);
+
+    let submissionId = null;
+
+    console.log('\n=== NOTARIZATION STEP: Submitting app to Apple ===');
+    console.log(`  Apple ID : ${notaryAppleId}`);
+    console.log(`  Team ID  : ${notaryTeamId}`);
+
+    const submitArgs = [
+        'notarytool', 'submit', zipPath,
+        '--apple-id', notaryAppleId,
+        '--password', notaryPassword,
+        '--team-id', notaryTeamId,
+        '--wait',
+        '--output-format', 'json',
+    ];
+
+    let result;
+    try {
+        result = await runCommandCapture('xcrun', submitArgs, projectRoot, {
+            sensitiveValues: [notaryPassword],
+        });
+    } catch (err) {
+        return await failNotarization(err, zipPath, submissionId);
+    }
+
+    const combinedOutput = `${result.stdout}\n${result.stderr}`;
+    const parsed = tryParseJson(result.stdout) || tryParseJson(result.stderr);
+    submissionId = parsed?.id || extractNotarySubmissionId(combinedOutput);
+
+    if (parsed?.status && parsed.status !== 'Accepted') {
+        const error = new Error(`Notarization finished with status "${parsed.status}" instead of "Accepted".`);
+        error.submissionId = submissionId;
+        error.stdout = result.stdout;
+        error.stderr = result.stderr;
+        return await failNotarization(error, zipPath, submissionId);
+    }
+
+    console.log('\n=== NOTARIZATION STEP: Stapling notarization ticket to .app ===');
+    try {
+        await runCommand('xcrun', ['stapler', 'staple', '-v', outAppPath], projectRoot);
+        console.log('\n=== NOTARIZATION STEP: Validating stapled .app ===');
+        await runCommand('xcrun', ['stapler', 'validate', '-v', outAppPath], projectRoot);
+    } catch (err) {
+        return await failNotarization(err, zipPath, submissionId);
+    }
+
+    if (deleteNotarizationZipOnSuccess) {
+        console.log(`Deleting notarization zip after successful notarization/stapling: ${zipPath}`);
+        await fs.rm(zipPath, { force: true });
+    } else {
+        console.log(`Keeping notarization zip: ${zipPath}`);
     }
 }
 
@@ -627,6 +1631,35 @@ if (!skipSign) {
     await signUniversalApp();
 } else {
     console.log('Signing skipped by user (--no-sign / --skip-sign). ===\n');
+}
+if (shouldNotarizeApp) {
+    console.log('\n=== LAST STEP: Notarizing and stapling universal app. ===\n');
+    await notarizeAndStapleUniversalApp();
+}
+
+// Package the universal .app into an installer for dmg/pkg targets.
+// mas and mas-dev are distributed as bare .app bundles via the App Store — no installer needed.
+if (packagingTargets.has(macTarget.targetName)) {
+    await packageUniversalApp(macTarget.targetName);
+
+    // PKG installers must be signed with a separate Installer certificate after creation.
+    // DMG files do not require a dedicated installer-signing step.
+    if (macTarget.targetName === 'pkg' && !skipSign) {
+        const universalDir = path.dirname(outAppPath);
+        const dirEntries = await fs.readdir(universalDir);
+        const pkgFiles = dirEntries.filter(f => f.endsWith('.pkg'));
+        if (pkgFiles.length === 0) {
+            throw new Error(`PKG signing: no .pkg file found in ${universalDir}`);
+        }
+        if (pkgFiles.length > 1) {
+            console.warn(`PKG signing: multiple .pkg files found; signing all of them.`);
+        }
+        for (const pkgFile of pkgFiles) {
+            await signPkgInstaller(path.join(universalDir, pkgFile));
+        }
+    }
+} else {
+    console.log(`Packaging step skipped — target '${macTarget.targetName}' does not require an installer.`);
 }
 
 console.log('=== BUILD COMPLETE ===');
