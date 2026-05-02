@@ -1,0 +1,36 @@
+{
+  "appName": "ExampleApp",
+  "projectRoot": "..",
+  "buildCwd": "..",
+  "publishProfiles": {
+    "osxX64": "publish-osx-x64",
+    "osxArm64": "publish-osx-arm64"
+  },
+  "signIdentity": "Developer ID Application: Your Name (TEAMID)",
+  "notarization": {
+    "appleId": "your-apple-id@example.com",
+    "appPassword": "xxxx-xxxx-xxxx-xxxx",
+    "teamId": "TEAMID1234",
+    "deleteZipOnSuccess": false
+  },
+  "macSigning": {
+    "defaults": {
+      "type": "distribution",
+      "timestamp": "http://timestamp.apple.com/ts01",
+      "gatekeeperAssess": false,
+      "verbose": true,
+      "extraOptions": {
+        "identity-validation": false
+      }
+    },
+    "targets": {
+      "dmg": {
+        "entitlements": "entitlements.mac.plist",
+        "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "hardenedRuntime": true,
+        "extraOptions": {}
+      }
+    }
+  }
+}
+

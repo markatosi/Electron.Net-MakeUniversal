@@ -1,0 +1,65 @@
+{
+  "appName": "ExampleApp",
+  "projectRoot": "..",
+  "buildCwd": "..",
+  "publishProfiles": {
+    "osxX64": "publish-osx-x64",
+    "osxArm64": "publish-osx-arm64"
+  },
+  "signIdentity": "Apple Development: Your Name (TEAMID)",
+  "installerIdentity": "Developer ID Installer: Your Name (TEAMID)",
+  "pkg": {
+    "welcome": null,
+    "license": null
+  },
+  "notarization": {
+    "appleId": "your-apple-id@example.com",
+    "appPassword": "xxxx-xxxx-xxxx-xxxx",
+    "teamId": "TEAMID1234",
+    "deleteZipOnSuccess": false
+  },
+  "macSigning": {
+    "defaults": {
+      "type": "distribution",
+      "timestamp": "http://timestamp.apple.com/ts01",
+      "gatekeeperAssess": false,
+      "verbose": true,
+      "extraOptions": {
+        "identity-validation": false
+      }
+    },
+    "targets": {
+      "dmg": {
+        "entitlements": "entitlements.mac.plist",
+        "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "hardenedRuntime": true,
+        "extraOptions": {}
+      },
+      "pkg": {
+        "entitlements": "entitlements.mac.plist",
+        "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "hardenedRuntime": true,
+        "extraOptions": {}
+      },
+      "mas": {
+        "entitlements": "entitlements.mas.plist",
+        "entitlementsInherit": "entitlements.mas.inherit.plist",
+        "provisioningProfile": "Development.provisionprofile",
+        "platform": "mas",
+        "type": "distribution",
+        "hardenedRuntime": false,
+        "extraOptions": {}
+      },
+      "mas-dev": {
+        "entitlements": "entitlements.mas.plist",
+        "entitlementsInherit": "entitlements.mas.inherit.plist",
+        "provisioningProfile": "Development.provisionprofile",
+        "platform": "mas",
+        "type": "development",
+        "hardenedRuntime": false,
+        "extraOptions": {}
+      }
+    }
+  }
+}
+
