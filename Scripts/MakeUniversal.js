@@ -1,37 +1,4 @@
-/* HOW TO Manage Identity
-
-1) Temporary for current shell session (zsh/bash)
-export SIGN_IDENTITY="YOUR_SIGN_IDENTITY_VALUE"
-node yourFolderPath/MakeUniversal.js
-
-2) One‑shot for a single command
-SIGN_IDENTITY="YOUR_SIGN_IDENTITY_VALUE" node yourFolderPath/MakeUniversal.js
-
-3) Persist across sessions (macOS default shell is zsh)
-append to `~/.zshrc` (or `~/.bash_profile` if you use bash)
-
-echo 'export SIGN_IDENTITY="YOUR_SIGN_IDENTITY_VALUE"' >> ~/.zshrc
-
-apply immediately
-source ~/.zshrc
-
-4) JetBrains Rider (Run/Debug configuration)
- - Open Run | Edit Configurations...
- - Select your configuration
- - Add environment variable: SIGN_IDENTITY=YOUR_SIGN_IDENTITY_VALUE
- - Save and run the configuration
-
-5) GitHub Actions (use secrets, do NOT commit the value)
- put the secret in repo Settings -> Secrets -> New repository secret (name: SIGN_IDENTITY)
- workflow snippet:
- (place under a job)
-
-env:
-  SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
-steps:
-  - name: Run make universal
-    run: node yourFolderPath/MakeUniversal.js
-
+/*
 MARKNET TECHNOLOGIES, LLC
 Copyright (c)  2023 - 2026 MARKNET TECHNOLOGIES, LLC
 ALL RIGHTS RESERVED
