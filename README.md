@@ -40,14 +40,15 @@ The script currently supports:
 
 ## 1. Overview
 
-`Scripts/MakeUniversal.js` reads the active macOS target from:
+`Scripts/MakeUniversal.js` reads the macOS target list from:
 
 - `Properties/electron-builder.json`
 
-That target controls the final packaging behavior:
+Those targets control the final packaging behavior:
 
 - `pkg` → create a signed installer package
 - `dmg` → create a drag-and-drop disk image
+- `pkg` + `dmg` → create both installers in one run
 - `mas` / `mas-dev` → no installer packaging step; the output remains a signed `.app`
 
 The high-level flow is:
@@ -57,11 +58,13 @@ The high-level flow is:
 3. clean unwanted files
 4. merge both builds into one universal `.app`
 5. sign the universal `.app`
-6. if target is `pkg` or `dmg`:
+6. if one or more installer targets are present (`pkg`, `dmg`):
    - notarize the signed `.app`
    - staple the notarization ticket to the `.app`
-7. package as `pkg` or `dmg`
-8. if target is `pkg`, sign the installer with `productsign`
+7. package each requested installer target
+8. if `pkg` is among the requested targets, sign the final `pkg` installer with `productsign`
+
+When multiple installer targets are configured, notarization still happens only once because the universal `.app` is notarized before installer packaging begins.
 
 ---
 
@@ -126,13 +129,13 @@ At minimum, `MakeUniversal.js` needs:
 - `--app-name`
 - `--publish-profile-osx-x64`
 - `--publish-profile-osx-arm64`
-- a signing identity for the active target unless `--no-sign` is used
+- a signing identity for the primary target unless `--no-sign` is used
 
-If the target is `pkg`, installer creation is enabled, and signing is enabled, it also needs:
+If `pkg` is among the requested installer targets, installer creation is enabled, and signing is enabled, it also needs:
 
 - `--installer-identity`
 
-If the target is `pkg` or `dmg`, signing is enabled, and notarization has not been disabled, it also needs notarization credentials:
+If one or more installer targets are present (`pkg` / `dmg`), signing is enabled, and notarization has not been disabled, it also needs notarization credentials:
 
 - `--notarize-apple-id`
 - `--notarize-app-password`
@@ -211,8 +214,45 @@ If notarization is still enabled and the active target is `pkg` or `dmg`, the `.
 
 ## 5. Target-specific examples
 
-> The active target comes from `Properties/electron-builder.json`.
-> If you want `dmg`, `pkg`, `mas`, or `mas-dev`, update that file first.
+> The mac target list comes from `Properties/electron-builder.json`.
+> If you want `dmg`, `pkg`, `pkg` + `dmg`, `mas`, or `mas-dev`, update that file first.
+
+### Example: multiple installer targets (`pkg` + `dmg`)
+
+In `Properties/electron-builder.json`:
+
+```json
+{
+  "mac": {
+    "target": [
+      "pkg",
+      "dmg"
+    ]
+  }
+}
+```
+
+Run:
+
+```zsh
+node "./Scripts/MakeUniversal.js" \
+  --app-name="ExampleApp" \
+  --publish-profile-osx-x64="publish-osx-x64" \
+  --publish-profile-osx-arm64="publish-osx-arm64" \
+  --sign-identity="Developer ID Application: Your Name (TEAMID)" \
+  --installer-identity="Developer ID Installer: Your Name (TEAMID)" \
+  --notarize-apple-id="your-apple-id@example.com" \
+  --notarize-app-password="xxxx-xxxx-xxxx-xxxx" \
+  --notarize-team-id="TEAMID1234"
+```
+
+That run will:
+
+- build the universal `.app`
+- sign it once
+- notarize and staple it once
+- create both the `.pkg` and `.dmg`
+- sign the final `.pkg`
 
 ### Example: `pkg`
 
@@ -306,9 +346,28 @@ Start from:
 
 You can also start from one of the target-specific examples:
 
+- `Scripts/MakeUniversal.config.pkg-dmg.example.json`
 - `Scripts/MakeUniversal.config.pkg.example.json`
 - `Scripts/MakeUniversal.config.dmg.example.json`
 - `Scripts/MakeUniversal.config.mas.example.json`
+
+Recommended starting point for direct distribution:
+
+- use `Scripts/MakeUniversal.config.pkg-dmg.example.json`
+- set `Properties/electron-builder.json` `mac.target` to both `"pkg"` and `"dmg"`
+
+Example:
+
+```json
+{
+  "mac": {
+    "target": [
+      "pkg",
+      "dmg"
+    ]
+  }
+}
+```
 
 Copy it to one of these locations:
 
@@ -330,6 +389,8 @@ command line switch > config file value > built-in default
 ```
 
 That means you can keep a stable config file and still override individual values from the command line.
+
+If `Properties/electron-builder.json` contains multiple installer targets such as `pkg` + `dmg`, the config file is still read once and the script uses the first configured target as the primary signing target for resolving target-specific `macSigning.targets.<target>` values.
 
 ---
 
@@ -389,7 +450,36 @@ Set these to `null` if unused, or to relative/absolute file paths.
 
 Set `enabled` to `false` when you want to keep app signing active but skip notarization.
 
+### Multi-target starter layout
+
+The template and the combined `pkg` + `dmg` example are meant to pair with a mac target list like this in `Properties/electron-builder.json`:
+
+```json
+{
+  "mac": {
+    "target": [
+      "pkg",
+      "dmg"
+    ]
+  }
+}
+```
+
+When that target list is used:
+
+- the universal `.app` is signed once
+- the universal `.app` is notarized once
+- a `.pkg` is created and then signed
+- a `.dmg` is created in the same run
+
 ### mac signing
+
+The template and the combined `pkg` + `dmg` example are intentionally structured around the common direct-distribution flow:
+
+- both `pkg` and `dmg` use `Developer ID Application` style app signing
+- `pkg` additionally uses the top-level `installerIdentity`
+- notarization is enabled
+- both installer targets point to the mac entitlements files
 
 ```json
 "macSigning": {
@@ -403,11 +493,21 @@ Set `enabled` to `false` when you want to keep app signing active but skip notar
     }
   },
   "targets": {
+      "dmg": {
+        "signIdentity": "Developer ID Application: Your Name (TEAMID)",
+        "entitlements": "entitlements.mac.plist",
+        "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "provisioningProfile": null,
+        "platform": "mac",
+        "hardenedRuntime": true,
+        "extraOptions": {}
+      },
     "pkg": {
       "signIdentity": "Developer ID Application: Your Name (TEAMID)",
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.inherit.plist",
       "provisioningProfile": null,
+        "platform": "mac",
       "hardenedRuntime": true,
       "extraOptions": {}
     }
@@ -446,6 +546,8 @@ Examples:
 
 This identity is required for all signed app targets unless you use `--no-sign`.
 The target-specific config location is important because `pkg` / `dmg`, `mas`, and `mas-dev` often need different Apple certificates.
+
+When multiple installer targets are configured, `MakeUniversal.js` resolves app signing settings from the first configured target (`primaryTargetName`). For example, with `mac.target: ["pkg", "dmg"]`, the script uses `macSigning.targets.pkg.*` as the primary signing source.
 
 ### Installer signing identity
 
@@ -530,7 +632,10 @@ That output includes:
 
 - `signing.identity`
 - `signing.installerIdentity`
-- resolved `osxSign` settings for the active target
+- resolved `osxSign` settings for the primary signing target
+- `macTarget.targetNames`
+- `macTarget.installerTargetNames`
+- `primarySigningTarget`
 
 ### How to find your certificate names
 
@@ -695,6 +800,8 @@ Notes:
 
 For `pkg` and `dmg`, the script notarizes the signed universal `.app` before packaging unless notarization has been disabled.
 
+If both `pkg` and `dmg` are configured, the script still performs a single notarization pass because notarization happens before the installer loop starts.
+
 Flow:
 
 1. sign the universal `.app`
@@ -743,6 +850,8 @@ Typical outputs include:
 - `bin/Desktop/universal/<AppName>.app`
 - `bin/Desktop/universal/<ProductName>-<version>.pkg`
 - `bin/Desktop/universal/<ProductName>-<version>.dmg`
+
+If both installer targets are configured, both installer files will be created in the same `bin/Desktop/universal/` folder.
 
 ---
 
@@ -799,7 +908,40 @@ If you have an older config file that still uses a top-level `signIdentity`, mov
 
 ### PKG welcome / license ignored
 
-`--pkg-welcome` and `--pkg-license` are only used when the active target is `pkg`.
+`--pkg-welcome` and `--pkg-license` are only used when `pkg` is among the configured installer targets.
+
+### Multiple installer targets use the first target for signing resolution
+
+If you configure:
+
+```json
+"target": ["pkg", "dmg"]
+```
+
+the script uses `pkg` as the primary signing target when resolving:
+
+- `macSigning.targets.<target>.signIdentity`
+- `entitlements`
+- `entitlementsInherit`
+- `provisioningProfile`
+- `platform`
+- `type`
+- `hardenedRuntime`
+
+If you want different signing behavior, make sure the first target in `electron-builder.json` is the one whose signing settings should drive the universal `.app` signing step.
+
+### Unsupported target combinations
+
+The script supports multiple installer-style targets that share the same Electron.NET publish directory family, such as:
+
+- `pkg` + `dmg`
+
+The script does not support mixing installer targets with channel-style targets in the same run, for example:
+
+- `pkg` + `mas`
+- `dmg` + `mas-dev`
+
+It also does not support multiple channel-style targets together in one run.
 
 ### Installer creation intentionally skipped
 

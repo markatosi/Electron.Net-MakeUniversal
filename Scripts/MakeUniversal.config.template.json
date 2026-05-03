@@ -37,6 +37,7 @@
         "entitlements": "entitlements.mac.plist",
         "entitlementsInherit": "entitlements.mac.inherit.plist",
         "provisioningProfile": null,
+        "platform": "mac",
         "hardenedRuntime": true,
         "extraOptions": {}
       },
@@ -45,6 +46,7 @@
         "entitlements": "entitlements.mac.plist",
         "entitlementsInherit": "entitlements.mac.inherit.plist",
         "provisioningProfile": null,
+        "platform": "mac",
         "hardenedRuntime": true,
         "extraOptions": {}
       },

@@ -432,30 +432,64 @@ async function readElectronBuilderConfig() {
 }
 
 /**
- * Reads Properties/electron-builder.json from the project root and returns
- * { targetName, dirName } where:
- *   targetName — the raw target string from the config (e.g. "pkg", "dmg", "mas-dev")
- *   dirName    — the output directory name electron-builder uses for that target:
- *                installer-style targets (dmg, pkg, zip, tar.gz) → "mac" / "mac-arm64"
- *                channel-style targets  (mas, mas-dev, …)        → "<target>" / "<target>-arm64"
+ * Reads Properties/electron-builder.json from the project root and returns:
+ * {
+ *   targetNames,          // all configured target strings in declared order
+ *   primaryTargetName,    // the first configured target
+ *   installerTargetNames, // installer-style targets among targetNames
+ *   dirName               // publish output directory family used by Electron.NET
+ * }
+ *
+ * Supported multi-target mode is limited to installer-style targets that share the
+ * same publish output directory family (e.g. pkg + dmg => mac / mac-arm64).
  */
-async function readMacTarget() {
+async function readMacTargets() {
     const config = await readElectronBuilderConfig();
     const macTarget = config?.mac?.target;
     if (!macTarget) {
         throw new Error('No mac.target found in Properties/electron-builder.json.');
     }
-    // target can be a string, an object {target,arch}, or an array of either
-    const first = Array.isArray(macTarget) ? macTarget[0] : macTarget;
-    const targetName = (typeof first === 'string') ? first : first?.target;
-    if (!targetName || typeof targetName !== 'string') {
-        throw new Error(`Could not resolve a target string from mac.target in electron-builder.json. Got: ${JSON.stringify(first)}`);
+
+    const rawTargets = Array.isArray(macTarget) ? macTarget : [macTarget];
+    const targetNames = rawTargets
+        .map(t => typeof t === 'string' ? t : t?.target)
+        .filter(t => typeof t === 'string');
+
+    if (targetNames.length === 0) {
+        throw new Error(`Could not resolve any target strings from mac.target in electron-builder.json. Got: ${JSON.stringify(macTarget)}`);
     }
+
     // electron-builder uses "mac" / "mac-arm64" as the output directory names
     // for installer-style targets; channel-style targets use their own name.
     const installerTargets = new Set(['dmg', 'pkg', 'zip', 'tar.gz']);
-    const dirName = installerTargets.has(targetName) ? 'mac' : targetName;
-    return { targetName, dirName };
+    const installerTargetNames = targetNames.filter(targetName => installerTargets.has(targetName));
+    const nonInstallerTargetNames = targetNames.filter(targetName => !installerTargets.has(targetName));
+
+    if (targetNames.length > 1) {
+        if (installerTargetNames.length > 0 && nonInstallerTargetNames.length > 0) {
+            throw new Error(
+                `Unsupported mac.target combination in electron-builder.json: ${targetNames.join(', ')}. ` +
+                'Mixing installer targets (pkg/dmg/zip/tar.gz) with channel-style targets (mas/mas-dev/...) is not supported by MakeUniversal.js.'
+            );
+        }
+
+        if (nonInstallerTargetNames.length > 1) {
+            throw new Error(
+                `Unsupported mac.target combination in electron-builder.json: ${targetNames.join(', ')}. ` +
+                'Multiple channel-style targets are not supported by MakeUniversal.js.'
+            );
+        }
+    }
+
+    const primaryTargetName = targetNames[0];
+    const dirName = installerTargets.has(primaryTargetName) ? 'mac' : primaryTargetName;
+
+    return {
+        targetNames,
+        primaryTargetName,
+        installerTargetNames,
+        dirName,
+    };
 }
 
 const profileX64 = await validatePublishProfile(cliProfileX64, 'osx-x64'); // null or {name, publishUrlRaw, publishPath, fullPath}
@@ -502,21 +536,21 @@ if (!publishPathArm) {
 
 // Read the mac target from electron-builder.json — drives the output directory names
 // and determines whether a post-merge installer package should be produced.
-const macTarget = await readMacTarget();
-console.log(`Mac target (from Properties/electron-builder.json): targetName=${macTarget.targetName}, dirName=${macTarget.dirName}`);
+const macTarget = await readMacTargets();
+console.log(`Mac targets (from Properties/electron-builder.json): targetNames=${macTarget.targetNames.join(', ')}, primaryTargetName=${macTarget.primaryTargetName}, dirName=${macTarget.dirName}`);
 const packagingTargets = new Set(['dmg', 'pkg']);
-const shouldCreateInstaller = packagingTargets.has(macTarget.targetName) && !skipInstaller;
-const configTargetSignIdentity = getConfigValue(makeUniversalConfig, ['macSigning', 'targets', macTarget.targetName, 'signIdentity']);
+const shouldCreateInstaller = macTarget.installerTargetNames.length > 0 && !skipInstaller;
+const configTargetSignIdentity = getConfigValue(makeUniversalConfig, ['macSigning', 'targets', macTarget.primaryTargetName, 'signIdentity']);
 const legacyConfigIdentity = getConfigValue(makeUniversalConfig, ['signIdentity']);
 const identity = getFirstDefined(cliIdentityOverride, configTargetSignIdentity, legacyConfigIdentity, envIdentity);
-const shouldNotarizeApp = packagingTargets.has(macTarget.targetName) && !skipSign && !skipNotarization;
+const shouldNotarizeApp = macTarget.installerTargetNames.length > 0 && !skipSign && !skipNotarization;
 
 if (!printEffectiveConfig && !skipSign && !identity) {
-    console.error(`Error: No signing identity was resolved for target "${macTarget.targetName}".`);
+    console.error(`Error: No signing identity was resolved for target "${macTarget.primaryTargetName}".`);
     console.error('Supply it via one of:');
     console.error('  --sign-identity="<identity>"');
     console.error('  SIGN_IDENTITY="<identity>"');
-    console.error(`  macSigning.targets.${macTarget.targetName}.signIdentity   (MakeUniversal config file)`);
+    console.error(`  macSigning.targets.${macTarget.primaryTargetName}.signIdentity   (MakeUniversal config file)`);
     console.error('');
     console.error('For target-aware config, prefer setting signIdentity inside the active target definition.');
     console.error('To skip all signing (and therefore notarization) pass --no-sign.');
@@ -529,7 +563,7 @@ if (legacyConfigIdentity && !cliIdentityOverride && !configTargetSignIdentity) {
 
 // Early validation: PKG target requires an installer identity for signing.
 // Fail before the builds start (which can take many minutes) rather than at the end.
-if (macTarget.targetName === 'pkg' && shouldCreateInstaller && !skipSign && !printEffectiveConfig) {
+if (macTarget.installerTargetNames.includes('pkg') && shouldCreateInstaller && !skipSign && !printEffectiveConfig) {
     const installerIdentity = cliInstallerIdentity || process.env.INSTALLER_IDENTITY;
     if (!installerIdentity) {
         console.error('Error: The target is "pkg" but no installer certificate identity was provided.');
@@ -548,7 +582,7 @@ if (macTarget.targetName === 'pkg' && shouldCreateInstaller && !skipSign && !pri
 }
 if (shouldNotarizeApp && !printEffectiveConfig) {
     if (!notaryAppleId || !notaryPassword || !notaryTeamId) {
-        console.error(`Error: The target is "${macTarget.targetName}" but notarization credentials are incomplete.`);
+        console.error(`Error: The installer targets are "${macTarget.installerTargetNames.join(', ')}" but notarization credentials are incomplete.`);
         console.error('dmg/pkg builds require notarization of the signed universal .app before packaging.');
         console.error('');
         console.error('Supply all values via switches:');
@@ -563,16 +597,16 @@ if (shouldNotarizeApp && !printEffectiveConfig) {
         process.exit(1);
     }
 }
-if (macTarget.targetName !== 'pkg' && (pkgWelcomePath || pkgLicensePath)) {
-    console.warn('Warning: --pkg-welcome / --pkg-license were provided, but the current mac target is not "pkg". These resources will be ignored.');
+if (!macTarget.installerTargetNames.includes('pkg') && (pkgWelcomePath || pkgLicensePath)) {
+    console.warn('Warning: --pkg-welcome / --pkg-license were provided, but "pkg" is not among the current mac targets. These resources will be ignored.');
 }
-if (!packagingTargets.has(macTarget.targetName) && (cliNotaryAppleId || cliNotaryPassword || cliNotaryTeamId || deleteNotarizationZipOnSuccess)) {
-    console.warn('Warning: notarization switches were provided, but the current mac target is neither "pkg" nor "dmg". These notarization options will be ignored.');
+if (macTarget.installerTargetNames.length === 0 && (cliNotaryAppleId || cliNotaryPassword || cliNotaryTeamId || deleteNotarizationZipOnSuccess)) {
+    console.warn('Warning: notarization switches were provided, but none of the current mac targets are installer targets ("pkg" / "dmg"). These notarization options will be ignored.');
 }
-if (packagingTargets.has(macTarget.targetName) && !skipSign && skipNotarization) {
+if (macTarget.installerTargetNames.length > 0 && !skipSign && skipNotarization) {
     console.log('Notarization is disabled for this run (--no-notarization / --skip-notarization or notarization.enabled=false).');
 }
-if (packagingTargets.has(macTarget.targetName) && skipInstaller) {
+if (macTarget.installerTargetNames.length > 0 && skipInstaller) {
     console.log('Installer creation is disabled for this run (--no-installer / --skip-installer or packaging.enabled=false).');
 }
 
@@ -690,7 +724,8 @@ const {makeUniversalApp} = await ensureDependenciesAndImport();
 console.log('Resolved paths:');
 console.log('projectRoot:', projectRoot);
 console.log('buildCwd:', buildCwd);
-console.log('macTarget.targetName:', macTarget.targetName);
+console.log('macTarget.targetNames:', macTarget.targetNames);
+console.log('macTarget.primaryTargetName:', macTarget.primaryTargetName);
 console.log('macTarget.dirName:', macTarget.dirName);
 console.log('x64AppPath:', x64AppPath);
 console.log('arm64AppPath:', arm64AppPath);
@@ -940,7 +975,7 @@ function resolveMacSigningOptions(targetName) {
 }
 
 function buildEffectiveConfig() {
-    const resolvedSigning = resolveMacSigningOptions(macTarget.targetName);
+    const resolvedSigning = resolveMacSigningOptions(macTarget.primaryTargetName);
 
     return {
         configSource: makeUniversalConfigPath || '<none>',
@@ -948,6 +983,7 @@ function buildEffectiveConfig() {
         projectRoot,
         buildCwd,
         macTarget,
+        primarySigningTarget: macTarget.primaryTargetName,
         packaging: {
             installerTargets: Array.from(packagingTargets),
             shouldCreateInstaller,
@@ -1350,7 +1386,7 @@ async function signUniversalApp() {
     const electronHostHookDir = path.resolve(projectRoot, 'ElectronHostHook');
     const hookRequire = createRequire(path.join(electronHostHookDir, 'package.json'));
     const {default: sign} = await import(pathToFileURL(hookRequire.resolve('electron-osx-sign')).href);
-    const signingOptions = resolveMacSigningOptions(macTarget.targetName);
+    const signingOptions = resolveMacSigningOptions(macTarget.primaryTargetName);
 
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let i = 0;
@@ -1376,7 +1412,7 @@ async function signUniversalApp() {
             };
 
             console.log('Resolved osx-sign options:');
-            console.log(`  target              : ${macTarget.targetName}`);
+            console.log(`  target              : ${macTarget.primaryTargetName}`);
             console.log(`  entitlements        : ${signingOptions.entitlements || '<none>'}`);
             console.log(`  entitlementsInherit : ${signingOptions.entitlementsInherit || '<none>'}`);
             console.log(`  provisioningProfile : ${signingOptions.provisioningProfile || '<none>'}`);
@@ -1561,28 +1597,30 @@ if (shouldNotarizeApp) {
 // Package the universal .app into an installer for dmg/pkg targets.
 // mas and mas-dev are distributed as bare .app bundles via the App Store — no installer needed.
 if (shouldCreateInstaller) {
-    await packageUniversalApp(macTarget.targetName);
+    for (const installerTargetName of macTarget.installerTargetNames) {
+        await packageUniversalApp(installerTargetName);
 
-    // PKG installers must be signed with a separate Installer certificate after creation.
-    // DMG files do not require a dedicated installer-signing step.
-    if (macTarget.targetName === 'pkg' && !skipSign) {
-        const universalDir = path.dirname(outAppPath);
-        const dirEntries = await fs.readdir(universalDir);
-        const pkgFiles = dirEntries.filter(f => f.endsWith('.pkg'));
-        if (pkgFiles.length === 0) {
-            throw new Error(`PKG signing: no .pkg file found in ${universalDir}`);
-        }
-        if (pkgFiles.length > 1) {
-            console.warn(`PKG signing: multiple .pkg files found; signing all of them.`);
-        }
-        for (const pkgFile of pkgFiles) {
-            await signPkgInstaller(path.join(universalDir, pkgFile));
+        // PKG installers must be signed with a separate Installer certificate after creation.
+        // DMG files do not require a dedicated installer-signing step.
+        if (installerTargetName === 'pkg' && !skipSign) {
+            const universalDir = path.dirname(outAppPath);
+            const dirEntries = await fs.readdir(universalDir);
+            const pkgFiles = dirEntries.filter(f => f.endsWith('.pkg'));
+            if (pkgFiles.length === 0) {
+                throw new Error(`PKG signing: no .pkg file found in ${universalDir}`);
+            }
+            if (pkgFiles.length > 1) {
+                console.warn(`PKG signing: multiple .pkg files found; signing all of them.`);
+            }
+            for (const pkgFile of pkgFiles) {
+                await signPkgInstaller(path.join(universalDir, pkgFile));
+            }
         }
     }
-} else if (packagingTargets.has(macTarget.targetName)) {
-    console.log(`Packaging step skipped by user/config — target '${macTarget.targetName}' supports an installer, but installer creation is disabled.`);
+} else if (macTarget.installerTargetNames.length > 0) {
+    console.log(`Packaging step skipped by user/config — installer targets '${macTarget.installerTargetNames.join(', ')}' were requested, but installer creation is disabled.`);
 } else {
-    console.log(`Packaging step skipped — target '${macTarget.targetName}' does not require an installer.`);
+    console.log(`Packaging step skipped — none of the current mac targets require an installer.`);
 }
 
 console.log('=== BUILD COMPLETE ===');

@@ -9,6 +9,11 @@
   "packaging": {
     "enabled": true
   },
+  "installerIdentity": "Developer ID Installer: Your Name (TEAMID)",
+  "pkg": {
+    "welcome": null,
+    "license": null
+  },
   "notarization": {
     "enabled": true,
     "appleId": "your-apple-id@example.com",
@@ -28,6 +33,15 @@
     },
     "targets": {
       "dmg": {
+        "signIdentity": "Developer ID Application: Your Name (TEAMID)",
+        "entitlements": "entitlements.mac.plist",
+        "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "provisioningProfile": null,
+        "platform": "mac",
+        "hardenedRuntime": true,
+        "extraOptions": {}
+      },
+      "pkg": {
         "signIdentity": "Developer ID Application: Your Name (TEAMID)",
         "entitlements": "entitlements.mac.plist",
         "entitlementsInherit": "entitlements.mac.inherit.plist",
