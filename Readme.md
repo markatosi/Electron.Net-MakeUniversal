@@ -1,4 +1,4 @@
-# MakeUniversal Release Notes
+# MakeUniversal Release Notes for users of Electron.Net
 
 This is the short release-oriented summary for `Scripts/MakeUniversal.js`.
 
