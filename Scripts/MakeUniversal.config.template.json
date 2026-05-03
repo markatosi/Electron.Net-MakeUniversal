@@ -6,6 +6,9 @@
     "osxX64": "publish-osx-x64",
     "osxArm64": "publish-osx-arm64"
   },
+  "packaging": {
+    "enabled": true
+  },
   "installerIdentity": "Developer ID Installer: Your Name (TEAMID)",
   "pkg": {
     "welcome": null,

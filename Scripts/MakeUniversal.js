@@ -225,6 +225,14 @@ const cliNotaryTeamId = getFirstDefined(
     getFlagValue(['--notarize-team-id', '--team-id', '--notary-team-id']),
     getConfigValue(makeUniversalConfig, ['notarization', 'teamId'])
 );
+const configPackagingEnabled = parseBooleanish(
+    getConfigValue(makeUniversalConfig, ['packaging', 'enabled']),
+    'packaging.enabled'
+);
+const skipInstaller =
+    process.argv.includes('--no-installer') ||
+    process.argv.includes('--skip-installer') ||
+    configPackagingEnabled === false;
 const configNotarizationEnabled = parseBooleanish(
     getConfigValue(makeUniversalConfig, ['notarization', 'enabled']),
     'notarization.enabled'
@@ -497,6 +505,7 @@ if (!publishPathArm) {
 const macTarget = await readMacTarget();
 console.log(`Mac target (from Properties/electron-builder.json): targetName=${macTarget.targetName}, dirName=${macTarget.dirName}`);
 const packagingTargets = new Set(['dmg', 'pkg']);
+const shouldCreateInstaller = packagingTargets.has(macTarget.targetName) && !skipInstaller;
 const configTargetSignIdentity = getConfigValue(makeUniversalConfig, ['macSigning', 'targets', macTarget.targetName, 'signIdentity']);
 const legacyConfigIdentity = getConfigValue(makeUniversalConfig, ['signIdentity']);
 const identity = getFirstDefined(cliIdentityOverride, configTargetSignIdentity, legacyConfigIdentity, envIdentity);
@@ -520,7 +529,7 @@ if (legacyConfigIdentity && !cliIdentityOverride && !configTargetSignIdentity) {
 
 // Early validation: PKG target requires an installer identity for signing.
 // Fail before the builds start (which can take many minutes) rather than at the end.
-if (macTarget.targetName === 'pkg' && !skipSign && !printEffectiveConfig) {
+if (macTarget.targetName === 'pkg' && shouldCreateInstaller && !skipSign && !printEffectiveConfig) {
     const installerIdentity = cliInstallerIdentity || process.env.INSTALLER_IDENTITY;
     if (!installerIdentity) {
         console.error('Error: The target is "pkg" but no installer certificate identity was provided.');
@@ -562,6 +571,9 @@ if (!packagingTargets.has(macTarget.targetName) && (cliNotaryAppleId || cliNotar
 }
 if (packagingTargets.has(macTarget.targetName) && !skipSign && skipNotarization) {
     console.log('Notarization is disabled for this run (--no-notarization / --skip-notarization or notarization.enabled=false).');
+}
+if (packagingTargets.has(macTarget.targetName) && skipInstaller) {
+    console.log('Installer creation is disabled for this run (--no-installer / --skip-installer or packaging.enabled=false).');
 }
 
 // Compute app bundle paths using the publish paths (no fallbacks)
@@ -627,6 +639,16 @@ function runCommandCapture(command, args, cwd, options = {}) {
             }
         });
     });
+}
+
+async function stageSignedAppBundle(destinationAppPath) {
+    await fs.rm(destinationAppPath, { recursive: true, force: true });
+
+    console.log('Staging signed app bundle with ditto (preserves bundle metadata and signatures):');
+    console.log(`  Source      : ${outAppPath}`);
+    console.log(`  Destination : ${destinationAppPath}`);
+
+    await runCommand('ditto', [outAppPath, destinationAppPath], projectRoot);
 }
 
 // Ensure required npm packages are present and dynamically import makeUniversalApp
@@ -928,8 +950,10 @@ function buildEffectiveConfig() {
         macTarget,
         packaging: {
             installerTargets: Array.from(packagingTargets),
+            shouldCreateInstaller,
             shouldNotarizeApp,
             skipSign,
+            skipInstaller,
             skipNotarization,
         },
         publishProfiles: {
@@ -1050,6 +1074,9 @@ async function createPkgInstallerWithPresentation(baseName, version, appId) {
     const artifactPath = path.join(universalDir, `${baseName}.pkg`);
     const tempDir = await fs.mkdtemp(path.join(universalDir, 'pkg-stage-'));
     const resourcesDir = path.join(tempDir, 'resources');
+    const pkgRootDir = path.join(tempDir, 'root');
+    const applicationsDir = path.join(pkgRootDir, 'Applications');
+    const stagedAppPath = path.join(applicationsDir, path.basename(outAppPath));
     const componentPkgName = `${appId}.pkg`;
     const componentPkgPath = path.join(tempDir, componentPkgName);
     const distributionPath = path.join(tempDir, 'distribution.xml');
@@ -1057,16 +1084,19 @@ async function createPkgInstallerWithPresentation(baseName, version, appId) {
     try {
         await fs.rm(artifactPath, { force: true });
         await fs.mkdir(resourcesDir, { recursive: true });
+        await fs.mkdir(applicationsDir, { recursive: true });
+        await stageSignedAppBundle(stagedAppPath);
 
         console.log('Creating PKG component package with pkgbuild (presentation mode):');
         console.log(`  App        : ${outAppPath}`);
+        console.log(`  Staged App : ${stagedAppPath}`);
         console.log(`  Identifier : ${appId}`);
         console.log(`  Version    : ${version}`);
         console.log(`  Component  : ${componentPkgPath}`);
 
         await runCommand('pkgbuild', [
-            '--component', outAppPath,
-            '--install-location', '/Applications',
+            '--root', pkgRootDir,
+            '--install-location', '/',
             '--identifier', appId,
             '--version', version,
             componentPkgPath,
@@ -1135,32 +1165,45 @@ async function createPkgInstaller() {
     const artifactPath = path.join(path.dirname(outAppPath), `${baseName}.pkg`);
     const version = await readProjectVersion();
     const appId = ebConfig.appId || 'com.example.app';
+    const universalDir = path.dirname(outAppPath);
 
     if (pkgWelcomePath || pkgLicensePath) {
         return await createPkgInstallerWithPresentation(baseName, version, appId);
     }
 
-    await fs.rm(artifactPath, { force: true });
+    const tempDir = await fs.mkdtemp(path.join(universalDir, 'pkg-root-'));
+    const pkgRootDir = path.join(tempDir, 'root');
+    const applicationsDir = path.join(pkgRootDir, 'Applications');
+    const stagedAppPath = path.join(applicationsDir, path.basename(outAppPath));
 
-    const args = [
-        '--component', outAppPath,
-        '--install-location', '/Applications',
-        '--identifier', appId,
-        '--version', version,
-        artifactPath,
-    ];
+    try {
+        await fs.rm(artifactPath, { force: true });
+        await fs.mkdir(applicationsDir, { recursive: true });
+        await stageSignedAppBundle(stagedAppPath);
 
-    console.log('Creating PKG with pkgbuild:');
-    console.log(`  App        : ${outAppPath}`);
-    console.log(`  Identifier : ${appId}`);
-    console.log(`  Version    : ${version}`);
-    console.log(`  Output     : ${artifactPath}`);
+        const args = [
+            '--root', pkgRootDir,
+            '--install-location', '/',
+            '--identifier', appId,
+            '--version', version,
+            artifactPath,
+        ];
 
-    await runCommand('pkgbuild', args, projectRoot);
+        console.log('Creating PKG with pkgbuild:');
+        console.log(`  App        : ${outAppPath}`);
+        console.log(`  Staged App : ${stagedAppPath}`);
+        console.log(`  Identifier : ${appId}`);
+        console.log(`  Version    : ${version}`);
+        console.log(`  Output     : ${artifactPath}`);
 
-    const stat = await fs.stat(artifactPath);
-    console.log(`✔  PKG installer created: ${artifactPath}  (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
-    return artifactPath;
+        await runCommand('pkgbuild', args, projectRoot);
+
+        const stat = await fs.stat(artifactPath);
+        console.log(`✔  PKG installer created: ${artifactPath}  (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+        return artifactPath;
+    } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+    }
 }
 
 /**
@@ -1413,14 +1456,25 @@ async function notarizeAndStapleUniversalApp() {
         '--output-format', 'json',
     ];
 
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    const spinner = setInterval(() => {
+        process.stdout.write(`\r${frames[i++ % frames.length]}  Waiting for Apple notarization approval...`);
+    }, 100);
+
     let result;
     try {
         result = await runCommandCapture('xcrun', submitArgs, projectRoot, {
             sensitiveValues: [notaryPassword],
         });
     } catch (err) {
+        clearInterval(spinner);
+        process.stdout.write('\r✖  Apple notarization request failed.                          \n');
         return await failNotarization(err, zipPath, submissionId);
     }
+
+    clearInterval(spinner);
+    process.stdout.write('\r✔  Apple notarization approval received.                     \n');
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     const parsed = tryParseJson(result.stdout) || tryParseJson(result.stderr);
@@ -1506,7 +1560,7 @@ if (shouldNotarizeApp) {
 
 // Package the universal .app into an installer for dmg/pkg targets.
 // mas and mas-dev are distributed as bare .app bundles via the App Store — no installer needed.
-if (packagingTargets.has(macTarget.targetName)) {
+if (shouldCreateInstaller) {
     await packageUniversalApp(macTarget.targetName);
 
     // PKG installers must be signed with a separate Installer certificate after creation.
@@ -1525,6 +1579,8 @@ if (packagingTargets.has(macTarget.targetName)) {
             await signPkgInstaller(path.join(universalDir, pkgFile));
         }
     }
+} else if (packagingTargets.has(macTarget.targetName)) {
+    console.log(`Packaging step skipped by user/config — target '${macTarget.targetName}' supports an installer, but installer creation is disabled.`);
 } else {
     console.log(`Packaging step skipped — target '${macTarget.targetName}' does not require an installer.`);
 }

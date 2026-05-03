@@ -1,4 +1,4 @@
-# MakeUniversal Guide
+# MakeUniversal Guide for users of Electron.Net
 
 This guide explains how to use `Scripts/MakeUniversal.js` to build, sign, notarize, and package a universal macOS application.
 
@@ -128,7 +128,7 @@ At minimum, `MakeUniversal.js` needs:
 - `--publish-profile-osx-arm64`
 - a signing identity for the active target unless `--no-sign` is used
 
-If the target is `pkg` and signing is enabled, it also needs:
+If the target is `pkg`, installer creation is enabled, and signing is enabled, it also needs:
 
 - `--installer-identity`
 
@@ -191,6 +191,21 @@ node "./Scripts/MakeUniversal.js" \
   --installer-identity="Developer ID Installer: Your Name (TEAMID)" \
   --no-notarization
 ```
+
+### Skip installer creation but keep the universal app build
+
+Use this when you want the script to stop after building/signing the universal `.app` instead of creating a `pkg` or `dmg` installer.
+
+```zsh
+node "./Scripts/MakeUniversal.js" \
+  --app-name="ExampleApp" \
+  --publish-profile-osx-x64="publish-osx-x64" \
+  --publish-profile-osx-arm64="publish-osx-arm64" \
+  --sign-identity="Developer ID Application: Your Name (TEAMID)" \
+  --no-installer
+```
+
+If notarization is still enabled and the active target is `pkg` or `dmg`, the `.app` will still be notarized and stapled before installer creation is skipped.
 
 ---
 
@@ -327,6 +342,7 @@ The template supports these main sections:
 - `appName`
 - `projectRoot`
 - `buildCwd`
+- `packaging.enabled`
 - `installerIdentity`
 
 ### Publish profiles
@@ -337,6 +353,16 @@ The template supports these main sections:
   "osxArm64": "publish-osx-arm64"
 }
 ```
+
+### Packaging
+
+```json
+"packaging": {
+  "enabled": true
+}
+```
+
+Set `enabled` to `false` when you want to skip creating the final `pkg` or `dmg` installer while still keeping the universal app build.
 
 ### PKG presentation
 
@@ -696,6 +722,14 @@ If you want signing to remain enabled but notarization to be skipped, use either
 - config file:
   - `"notarization": { "enabled": false }`
 
+If you want installer creation to be skipped, use either:
+
+- CLI:
+  - `--no-installer`
+  - `--skip-installer`
+- config file:
+  - `"packaging": { "enabled": false }`
+
 ---
 
 ## 13. Output locations
@@ -734,7 +768,7 @@ check that the configured path is valid relative to the project root / `buildCwd
 
 ### Missing installer identity
 
-If the target is `pkg` and signing is enabled, you must provide:
+If the target is `pkg`, installer creation is enabled, and signing is enabled, you must provide:
 
 - `--installer-identity`
 
@@ -766,6 +800,16 @@ If you have an older config file that still uses a top-level `signIdentity`, mov
 ### PKG welcome / license ignored
 
 `--pkg-welcome` and `--pkg-license` are only used when the active target is `pkg`.
+
+### Installer creation intentionally skipped
+
+If you use:
+
+- `--no-installer`
+- `--skip-installer`
+- or `"packaging": { "enabled": false }`
+
+the script will still build the universal `.app`, and it may still notarize/staple that `.app` for `pkg` / `dmg` targets unless notarization is also disabled.
 
 ### Hardened runtime mismatch
 
