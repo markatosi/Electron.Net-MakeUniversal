@@ -6,7 +6,6 @@
     "osxX64": "publish-osx-x64",
     "osxArm64": "publish-osx-arm64"
   },
-  "signIdentity": "Apple Distribution: Your Name (TEAMID)",
   "macSigning": {
     "defaults": {
       "type": "distribution",
@@ -19,6 +18,7 @@
     },
     "targets": {
       "mas": {
+        "signIdentity": "Apple Distribution: Your Name (TEAMID)",
         "entitlements": "entitlements.mas.plist",
         "entitlementsInherit": "entitlements.mas.inherit.plist",
         "provisioningProfile": "Development.provisionprofile",

@@ -6,8 +6,8 @@
     "osxX64": "publish-osx-x64",
     "osxArm64": "publish-osx-arm64"
   },
-  "signIdentity": "Developer ID Application: Your Name (TEAMID)",
   "notarization": {
+    "enabled": true,
     "appleId": "your-apple-id@example.com",
     "appPassword": "xxxx-xxxx-xxxx-xxxx",
     "teamId": "TEAMID1234",
@@ -25,8 +25,10 @@
     },
     "targets": {
       "dmg": {
+        "signIdentity": "Developer ID Application: Your Name (TEAMID)",
         "entitlements": "entitlements.mac.plist",
         "entitlementsInherit": "entitlements.mac.inherit.plist",
+        "provisioningProfile": null,
         "hardenedRuntime": true,
         "extraOptions": {}
       }

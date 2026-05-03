@@ -189,10 +189,7 @@ const cliProfileArm = getFirstDefined(
     getConfigValue(makeUniversalConfig, ['publishProfiles', 'osxArm64']),
     getConfigValue(makeUniversalConfig, ['publishProfileOsxArm64'])
 );
-const cliIdentity = getFirstDefined(
-    getFlagValue(['--sign-identity', '--identity']),
-    getConfigValue(makeUniversalConfig, ['signIdentity'])
-);
+const cliIdentityOverride = getFlagValue(['--sign-identity', '--identity']);
 
 // Installer certificate for PKG signing — separate from the app-bundle codesign identity.
 // Supply via --installer-identity=<cert> or the INSTALLER_IDENTITY environment variable.
@@ -228,6 +225,14 @@ const cliNotaryTeamId = getFirstDefined(
     getFlagValue(['--notarize-team-id', '--team-id', '--notary-team-id']),
     getConfigValue(makeUniversalConfig, ['notarization', 'teamId'])
 );
+const configNotarizationEnabled = parseBooleanish(
+    getConfigValue(makeUniversalConfig, ['notarization', 'enabled']),
+    'notarization.enabled'
+);
+const skipNotarization =
+    process.argv.includes('--no-notarization') ||
+    process.argv.includes('--skip-notarization') ||
+    configNotarizationEnabled === false;
 const deleteNotarizationZipOnSuccess =
     process.argv.includes('--delete-notarize-zip') ||
     process.argv.includes('--delete-notarization-zip') ||
@@ -262,15 +267,6 @@ if (!cliProfileX64 || !cliProfileArm) {
     console.error('Error: Both --publish-profile-osx-x64 and --publish-profile-osx-arm64 must be provided.');
     console.error('Usage: node `.MakeUniversal.js` --publish-profile-osx-x64=<profile-basename> --publish-profile-osx-arm64=<profile-basename> [other options]');
     console.error('Place the `.pubxml` files in `Properties/PublishProfiles` and pass only the file basenames (with or without the `.pubxml` extension).');
-    process.exit(1);
-}
-
-// Require a signing identity (env or CLI) unless skipSign is present
-if (!printEffectiveConfig && !skipSign && !cliIdentity && !envIdentity) {
-    console.error('Error: A signing identity must be supplied via the SIGN_IDENTITY environment variable or the --sign-identity / --identity switch.');
-    console.error('Usage: set SIGN_IDENTITY in the environment or run:');
-    console.error('  node `./MakeUniversal.js` --sign-identity=<identity> [other options]');
-    console.error('Do not commit signing identities to source control.');
     process.exit(1);
 }
 
@@ -321,13 +317,6 @@ function getFlagValue(names) {
         }
     }
     return null;
-}
-
-// require identity from env for safety (do not hardcode secrets)
-
-const identity = cliIdentity || process.env.SIGN_IDENTITY;
-if (!printEffectiveConfig && !skipSign && !identity) {
-    throw new Error('Signing identity required: set SIGN_IDENTITY in your environment (not committed to repo).');
 }
 
 // ensure projectRoot is absolute and exists
@@ -508,7 +497,26 @@ if (!publishPathArm) {
 const macTarget = await readMacTarget();
 console.log(`Mac target (from Properties/electron-builder.json): targetName=${macTarget.targetName}, dirName=${macTarget.dirName}`);
 const packagingTargets = new Set(['dmg', 'pkg']);
-const shouldNotarizeApp = packagingTargets.has(macTarget.targetName) && !skipSign;
+const configTargetSignIdentity = getConfigValue(makeUniversalConfig, ['macSigning', 'targets', macTarget.targetName, 'signIdentity']);
+const legacyConfigIdentity = getConfigValue(makeUniversalConfig, ['signIdentity']);
+const identity = getFirstDefined(cliIdentityOverride, configTargetSignIdentity, legacyConfigIdentity, envIdentity);
+const shouldNotarizeApp = packagingTargets.has(macTarget.targetName) && !skipSign && !skipNotarization;
+
+if (!printEffectiveConfig && !skipSign && !identity) {
+    console.error(`Error: No signing identity was resolved for target "${macTarget.targetName}".`);
+    console.error('Supply it via one of:');
+    console.error('  --sign-identity="<identity>"');
+    console.error('  SIGN_IDENTITY="<identity>"');
+    console.error(`  macSigning.targets.${macTarget.targetName}.signIdentity   (MakeUniversal config file)`);
+    console.error('');
+    console.error('For target-aware config, prefer setting signIdentity inside the active target definition.');
+    console.error('To skip all signing (and therefore notarization) pass --no-sign.');
+    process.exit(1);
+}
+
+if (legacyConfigIdentity && !cliIdentityOverride && !configTargetSignIdentity) {
+    console.warn('Warning: Top-level MakeUniversal config property `signIdentity` is deprecated. Move it to macSigning.targets.<target>.signIdentity.');
+}
 
 // Early validation: PKG target requires an installer identity for signing.
 // Fail before the builds start (which can take many minutes) rather than at the end.
@@ -551,6 +559,9 @@ if (macTarget.targetName !== 'pkg' && (pkgWelcomePath || pkgLicensePath)) {
 }
 if (!packagingTargets.has(macTarget.targetName) && (cliNotaryAppleId || cliNotaryPassword || cliNotaryTeamId || deleteNotarizationZipOnSuccess)) {
     console.warn('Warning: notarization switches were provided, but the current mac target is neither "pkg" nor "dmg". These notarization options will be ignored.');
+}
+if (packagingTargets.has(macTarget.targetName) && !skipSign && skipNotarization) {
+    console.log('Notarization is disabled for this run (--no-notarization / --skip-notarization or notarization.enabled=false).');
 }
 
 // Compute app bundle paths using the publish paths (no fallbacks)
@@ -919,6 +930,7 @@ function buildEffectiveConfig() {
             installerTargets: Array.from(packagingTargets),
             shouldNotarizeApp,
             skipSign,
+            skipNotarization,
         },
         publishProfiles: {
             osxX64: {
@@ -951,6 +963,7 @@ function buildEffectiveConfig() {
             },
         },
         notarization: {
+            enabled: !skipNotarization,
             appleId: notaryAppleId,
             appPassword: redactSecret(notaryPassword),
             teamId: notaryTeamId,
@@ -1356,9 +1369,11 @@ async function failNotarization(err, zipPath, submissionId) {
 
     if (resolvedSubmissionId) {
         console.error(`Submission ID: ${resolvedSubmissionId}`);
+        console.error('Warning: this command includes the app-specific password.');
+        console.error('\n');
         console.error('To fetch Apple\'s notarization log, run:');
         console.error(buildNotaryLogCommand(resolvedSubmissionId));
-        console.error('Warning: this command includes the app-specific password.');
+        
     } else {
         console.error('Apple did not return a notarization submission ID, so a log command could not be generated automatically.');
     }

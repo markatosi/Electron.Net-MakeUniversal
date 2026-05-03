@@ -1,4 +1,4 @@
-# MakeUniversal Guide for users of Electron.Net
+# MakeUniversal Guide
 
 This guide explains how to use `Scripts/MakeUniversal.js` to build, sign, notarize, and package a universal macOS application.
 
@@ -27,13 +27,14 @@ The script currently supports:
 - [6. Using `MakeUniversal.config.json`](#6-using-makeuniversalconfigjson)
 - [7. Config template structure](#7-config-template-structure)
 - [8. Identity and certificate inputs](#8-identity-and-certificate-inputs)
-- [9. Advanced `electron-osx-sign` pass-through options](#9-advanced-electron-osx-sign-pass-through-options)
-- [10. Print the effective config](#10-print-the-effective-config)
-- [11. Notarization behavior](#11-notarization-behavior)
-- [12. Output locations](#12-output-locations)
-- [13. Troubleshooting](#13-troubleshooting)
-- [14. Recommended workflow](#14-recommended-workflow)
-- [15. Summary](#15-summary)
+- [9. Common Apple certificate combinations by target](#9-common-apple-certificate-combinations-by-target)
+- [10. Advanced `electron-osx-sign` pass-through options](#10-advanced-electron-osx-sign-pass-through-options)
+- [11. Print the effective config](#11-print-the-effective-config)
+- [12. Notarization behavior](#12-notarization-behavior)
+- [13. Output locations](#13-output-locations)
+- [14. Troubleshooting](#14-troubleshooting)
+- [15. Recommended workflow](#15-recommended-workflow)
+- [16. Summary](#16-summary)
 
 ---
 
@@ -125,13 +126,13 @@ At minimum, `MakeUniversal.js` needs:
 - `--app-name`
 - `--publish-profile-osx-x64`
 - `--publish-profile-osx-arm64`
-- `--sign-identity` unless `--no-sign` is used
+- a signing identity for the active target unless `--no-sign` is used
 
 If the target is `pkg` and signing is enabled, it also needs:
 
 - `--installer-identity`
 
-If the target is `pkg` or `dmg` and signing is enabled, it also needs notarization credentials:
+If the target is `pkg` or `dmg`, signing is enabled, and notarization has not been disabled, it also needs notarization credentials:
 
 - `--notarize-apple-id`
 - `--notarize-app-password`
@@ -175,6 +176,20 @@ node "./Scripts/MakeUniversal.js" \
   --publish-profile-osx-x64="publish-osx-x64" \
   --publish-profile-osx-arm64="publish-osx-arm64" \
   --no-sign
+```
+
+### Skip notarization but keep signing enabled
+
+Use this when you want the `.app` to be signed but do not want the notarization step to run:
+
+```zsh
+node "./Scripts/MakeUniversal.js" \
+  --app-name="ExampleApp" \
+  --publish-profile-osx-x64="publish-osx-x64" \
+  --publish-profile-osx-arm64="publish-osx-arm64" \
+  --sign-identity="Developer ID Application: Your Name (TEAMID)" \
+  --installer-identity="Developer ID Installer: Your Name (TEAMID)" \
+  --no-notarization
 ```
 
 ---
@@ -312,7 +327,6 @@ The template supports these main sections:
 - `appName`
 - `projectRoot`
 - `buildCwd`
-- `signIdentity`
 - `installerIdentity`
 
 ### Publish profiles
@@ -339,12 +353,15 @@ Set these to `null` if unused, or to relative/absolute file paths.
 
 ```json
 "notarization": {
+  "enabled": true,
   "appleId": "your-apple-id@example.com",
   "appPassword": "xxxx-xxxx-xxxx-xxxx",
   "teamId": "TEAMID1234",
   "deleteZipOnSuccess": false
 }
 ```
+
+Set `enabled` to `false` when you want to keep app signing active but skip notarization.
 
 ### mac signing
 
@@ -361,14 +378,19 @@ Set these to `null` if unused, or to relative/absolute file paths.
   },
   "targets": {
     "pkg": {
+      "signIdentity": "Developer ID Application: Your Name (TEAMID)",
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.inherit.plist",
+      "provisioningProfile": null,
       "hardenedRuntime": true,
       "extraOptions": {}
     }
   }
 }
 ```
+
+For `pkg` and `dmg`, `provisioningProfile` is optional. If your direct-distribution app needs Apple Services outside the App Store, use a Developer ID provisioning profile there.
+For `mas` and `mas-dev`, a provisioning profile is normally required.
 
 ---
 
@@ -387,7 +409,7 @@ You can provide it by:
 - environment variable:
   - `SIGN_IDENTITY`
 - config file:
-  - `signIdentity`
+  - `macSigning.targets.<target>.signIdentity`
 
 Examples:
 
@@ -397,6 +419,7 @@ Examples:
 - certificate SHA-1 hash if you prefer using the key hash instead of the display name
 
 This identity is required for all signed app targets unless you use `--no-sign`.
+The target-specific config location is important because `pkg` / `dmg`, `mas`, and `mas-dev` often need different Apple certificates.
 
 ### Installer signing identity
 
@@ -445,7 +468,7 @@ In practice:
 
 - app signing identity:
   - CLI `--sign-identity`
-  - config `signIdentity`
+  - config `macSigning.targets.<target>.signIdentity`
   - env `SIGN_IDENTITY`
 - installer signing identity:
   - CLI `--installer-identity`
@@ -517,6 +540,17 @@ You can use either form with `MakeUniversal.js`:
 
 ---
 
+## 9. Common Apple certificate combinations by target
+
+The exact certificates Apple expects depend on your distribution channel. `MakeUniversal.js` does not hardcode the identity name, but these combinations are the most common starting points.
+
+| Target | Common app signing certificate | Common installer signing certificate | Notarization | Typical entitlements / profile | Hardened runtime |
+| --- | --- | --- | --- | --- | --- |
+| `pkg` | `Developer ID Application` for direct distribution, or `Apple Development` for local/testing workflows | `Developer ID Installer` | Yes for direct distribution | `entitlements.mac.plist`, `entitlements.mac.inherit.plist`, optional Developer ID provisioning profile when Apple Services are needed | `true` |
+| `dmg` | `Developer ID Application` for direct distribution, or `Apple Development` for local/testing workflows | Not applicable | Yes for direct distribution | `entitlements.mac.plist`, `entitlements.mac.inherit.plist`, optional Developer ID provisioning profile when Apple Services are needed | `true` |
+| `mas` | `Apple Distribution` | Not applicable in this script because no installer is produced | No | `entitlements.mas.plist`, `entitlements.mas.inherit.plist`, App Store provisioning profile, `platform: "mas"` | `false` |
+| `mas-dev` | `Apple Development` | Not applicable in this script because no installer is produced | No | `entitlements.mas.plist`, `entitlements.mas.inherit.plist`, development provisioning profile, `platform: "mas"`, `type: "development"` | `false` |
+
 ### Notes by target
 
 #### `pkg`
@@ -528,7 +562,7 @@ Common direct-distribution combination:
 - notarization: yes
 - hardened runtime: `true`
 - entitlements: `entitlements.mac.plist` + `entitlements.mac.inherit.plist`
-- provisioning profile: usually not needed
+- provisioning profile: optional Developer ID provisioning profile when Apple Services are needed
 
 For local/internal testing, teams sometimes use `Apple Development` for the app identity, but that is not the usual public distribution setup.
 
@@ -541,7 +575,7 @@ Common direct-distribution combination:
 - notarization: yes
 - hardened runtime: `true`
 - entitlements: `entitlements.mac.plist` + `entitlements.mac.inherit.plist`
-- provisioning profile: usually not needed
+- provisioning profile: optional Developer ID provisioning profile when Apple Services are needed
 
 #### `mas`
 
@@ -573,7 +607,7 @@ Use `--print-effective-config` to confirm what the script will actually use for 
 
 ---
 
-## 9. Advanced `electron-osx-sign` pass-through options
+## 10. Advanced `electron-osx-sign` pass-through options
 
 The config file also supports raw pass-through options for `electron-osx-sign`.
 
@@ -605,7 +639,7 @@ These values are passed to `electron-osx-sign`, but the script’s known structu
 
 ---
 
-## 10. Print the effective config
+## 11. Print the effective config
 
 To see exactly what the script resolved after combining:
 
@@ -631,9 +665,9 @@ Notes:
 
 ---
 
-## 11. Notarization behavior
+## 12. Notarization behavior
 
-For `pkg` and `dmg`, the script notarizes the signed universal `.app` before packaging.
+For `pkg` and `dmg`, the script notarizes the signed universal `.app` before packaging unless notarization has been disabled.
 
 Flow:
 
@@ -654,9 +688,17 @@ If `--delete-notarize-zip` is used:
 
 - the zip is deleted only after successful notarization and stapling
 
+If you want signing to remain enabled but notarization to be skipped, use either:
+
+- CLI:
+  - `--no-notarization`
+  - `--skip-notarization`
+- config file:
+  - `"notarization": { "enabled": false }`
+
 ---
 
-## 12. Output locations
+## 13. Output locations
 
 The universal application is created under:
 
@@ -670,7 +712,7 @@ Typical outputs include:
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Print resolved config
 
@@ -702,13 +744,24 @@ or set:
 
 ### Notarization credentials incomplete
 
-For `pkg` / `dmg` with signing enabled, provide all three:
+For `pkg` / `dmg` with signing enabled and notarization enabled, provide all three:
 
 - `--notarize-apple-id`
 - `--notarize-app-password`
 - `--notarize-team-id`
 
 or the corresponding environment variables.
+
+### Top-level `signIdentity` no longer used in config templates
+
+Use:
+
+- `macSigning.targets.dmg.signIdentity`
+- `macSigning.targets.pkg.signIdentity`
+- `macSigning.targets.mas.signIdentity`
+- `macSigning.targets.mas-dev.signIdentity`
+
+If you have an older config file that still uses a top-level `signIdentity`, move that value into the active target block.
 
 ### PKG welcome / license ignored
 
@@ -723,7 +776,7 @@ If the script errors about hardened runtime:
 
 ---
 
-## 14. Recommended workflow
+## 15. Recommended workflow
 
 ### Option A: CLI-only
 
@@ -753,7 +806,7 @@ node "./Scripts/MakeUniversal.js" --config="./Scripts/MakeUniversal.config.json"
 
 ---
 
-## 15. Summary
+## 16. Summary
 
 Use `Scripts/MakeUniversal.js` when you need a repeatable macOS release pipeline that can:
 
